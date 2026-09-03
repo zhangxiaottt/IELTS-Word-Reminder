@@ -13,8 +13,8 @@
     单词行（加粗、主色调）→ 音标行（灰色小字）→ 释义行 → 例句行（超长截断+悬停提示）
     → 底部按钮行：「认识」「不认识」+ 右侧「暂停/继续」「下一个」
 """
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import Qt, QTimer, Signal, QRectF
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPainterPath
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMenu, QGraphicsDropShadowEffect,
@@ -119,6 +119,96 @@ class ElideLabel(QLabel):
         super().resizeEvent(event)
 
 
+class BackgroundCard(QWidget):
+    """圆角卡片容器：支持设置静态背景图
+
+    - 未设置背景图：绘制白色圆角底 + 边框（与原面板一致）
+    - 设置背景图：等比放大铺满 + 居中裁剪 + 圆角裁切，
+      并叠加一层半透明白遮罩保证前景文字始终可读
+    - 背景图按当前尺寸预缩放缓存，拖动/缩放时不重复缩放大图
+    """
+
+    RADIUS = 10            # 圆角半径（像素）
+    OVERLAY_ALPHA = 150    # 背景图上白色遮罩透明度（0~255，越大文字越清晰）
+
+    def __init__(self, parent: QWidget = None):
+        super().__init__(parent)
+        self._bg_pixmap = None   # 原始背景图
+        self._bg_scaled = None   # 按当前尺寸缩放后的缓存
+        self.setMouseTracking(True)
+
+    # ------------------------------------------------------------------ #
+    # 对外接口
+    # ------------------------------------------------------------------ #
+    def set_background(self, path: str) -> None:
+        """设置背景图；path 为空或加载失败则清除背景，恢复白色底"""
+        try:
+            if path:
+                pm = QPixmap(path)
+                if not pm.isNull():
+                    self._bg_pixmap = pm
+                    self._update_scaled()
+                    self.update()
+                    return
+        except Exception:
+            pass
+        self._bg_pixmap = None
+        self._bg_scaled = None
+        self.update()
+
+    def has_background(self) -> bool:
+        """是否已设置有效背景图"""
+        return self._bg_pixmap is not None and not self._bg_pixmap.isNull()
+
+    # ------------------------------------------------------------------ #
+    # 缩放 / 绘制
+    # ------------------------------------------------------------------ #
+    def resizeEvent(self, event) -> None:
+        """尺寸变化时重新预缩放背景图缓存"""
+        self._update_scaled()
+        super().resizeEvent(event)
+
+    def _update_scaled(self) -> None:
+        """按当前尺寸等比放大铺满背景图（保持纵横比）"""
+        if self._bg_pixmap is None or self._bg_pixmap.isNull():
+            self._bg_scaled = None
+            return
+        size = self.size()
+        if size.width() <= 0 or size.height() <= 0:
+            self._bg_scaled = None
+            return
+        self._bg_scaled = self._bg_pixmap.scaled(
+            size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+        )
+
+    def paintEvent(self, event) -> None:
+        """绘制圆角底（白底或背景图+遮罩）与边框"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, self.RADIUS, self.RADIUS)
+        painter.setClipPath(path)
+
+        if self._bg_scaled is not None:
+            # 等比铺满并居中（裁掉超出部分）
+            x = (self.width() - self._bg_scaled.width()) // 2
+            y = (self.height() - self._bg_scaled.height()) // 2
+            painter.drawPixmap(x, y, self._bg_scaled)
+            # 半透明白遮罩：保证前景文字/按钮可读
+            painter.fillRect(rect, QColor(255, 255, 255, self.OVERLAY_ALPHA))
+        else:
+            painter.fillRect(rect, QColor("#FFFFFF"))
+
+        painter.setClipping(False)
+        # 边框
+        painter.setPen(QPen(QColor("#E0E0E0"), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+        painter.end()
+        super().paintEvent(event)
+
+
 class FloatPanel(QWidget):
     """复习悬浮面板"""
 
@@ -186,6 +276,8 @@ class FloatPanel(QWidget):
         self.set_opacity(float(self._config.get("panel.opacity", 0.85)))
         # 从配置读取是否自动轮播
         self.set_auto_enabled(bool(self._config.get("review.auto_start", True)))
+        # 从配置读取背景图（空表示默认白底）
+        self.set_background(str(self._config.get("panel.background", "") or ""))
 
         # 加载单词并显示
         self.refresh_words()
@@ -207,31 +299,23 @@ class FloatPanel(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
 
-        # 内容容器（圆角白底卡片）
-        container = QWidget(self)
-        container.setObjectName("panelContainer")
-        # 注意：QSS 含 CSS 花括号，不能用 .format()（花括号会被当作字段），用 replace 替换主题色
-        container.setStyleSheet(
-            "#panelContainer {"
-            "  background: @BG@;"
-            "  border: 1px solid #E0E0E0;"
-            "  border-radius: 10px;"
-            "}".replace("@BG@", self.COLOR_BG)
-        )
+        # 内容容器（圆角卡片，支持背景图；背景绘制由 BackgroundCard 负责）
+        self._container = BackgroundCard(self)
+        self._container.setObjectName("panelContainer")
 
         # 卡片投影效果（QQ音乐桌面歌词面板同款质感）
-        shadow = QGraphicsDropShadowEffect(container)
+        shadow = QGraphicsDropShadowEffect(self._container)
         shadow.setBlurRadius(18)
         shadow.setOffset(0, 2)
         shadow.setColor(QColor(0, 0, 0, 70))
-        container.setGraphicsEffect(shadow)
+        self._container.setGraphicsEffect(shadow)
         # 容器也开启鼠标追踪，保证角落热区光标反馈
-        container.setMouseTracking(True)
+        self._container.setMouseTracking(True)
 
-        outer.addWidget(container)
+        outer.addWidget(self._container)
 
         # 卡片内部布局
-        layout = QVBoxLayout(container)
+        layout = QVBoxLayout(self._container)
         layout.setContentsMargins(14, 12, 14, 10)
         layout.setSpacing(3)
 
@@ -266,7 +350,7 @@ class FloatPanel(QWidget):
         layout.addWidget(self._meaning_label)
 
         # 4. 例句行（灰色小字，超长截断 + 悬停完整提示）
-        self._example_label = ElideLabel("", container)
+        self._example_label = ElideLabel("", self._container)
         self._example_label.setStyleSheet(
             "color: {}; background: transparent; font-size: 11px;".format(self.COLOR_GRAY)
         )
@@ -390,6 +474,13 @@ class FloatPanel(QWidget):
         """设置是否允许自动轮播（对应配置 auto_start）"""
         self._auto_enabled = bool(enabled)
         self._update_timer()
+
+    def set_background(self, path: str) -> None:
+        """设置面板背景图（空字符串清除，恢复默认白底）"""
+        try:
+            self._container.set_background(path)
+        except Exception:
+            pass  # 背景图加载失败不影响面板功能
 
     def toggle_pause(self) -> None:
         """切换手动暂停 / 继续"""

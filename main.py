@@ -212,6 +212,7 @@ class MainApp:
             self._settings_window = SettingsWindow(self.config)
             self._settings_window.interval_changed.connect(self.panel.set_interval)
             self._settings_window.opacity_changed.connect(self.panel.set_opacity)
+            self._settings_window.background_changed.connect(self.panel.set_background)
             # 取消时回滚实时预览到已保存配置
             self._settings_window.canceled.connect(self._rollback_settings)
             self._settings_window.destroyed.connect(
@@ -225,6 +226,7 @@ class MainApp:
         """取消设置时，将面板恢复为已保存的配置值"""
         self.panel.set_interval(int(self.config.get("review.interval", 10)))
         self.panel.set_opacity(float(self.config.get("panel.opacity", 0.85)))
+        self.panel.set_background(str(self.config.get("panel.background", "") or ""))
 
     def open_library_window(self) -> None:
         """打开单词库管理窗口（单实例，数据变化刷新面板）"""

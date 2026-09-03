@@ -215,6 +215,24 @@ def main():
     )
     report("测试: 答错高亮正确答案", "#43A047" in correct_style)
 
+    # ---- 7. 背景图功能：预设扫描 / 面板背景设置 / 设置窗口清除 ----
+    bg_dir = os.path.join(BASE, "assets", "backgrounds")
+    presets = []
+    if os.path.isdir(bg_dir):
+        presets = [f for f in os.listdir(bg_dir)
+                   if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".webp"))]
+    report("背景: 存在内置预设", len(presets) >= 1, "n={}".format(len(presets)))
+    if presets:
+        bg_path = os.path.join(bg_dir, presets[0])
+        panel.set_background(bg_path)
+        report("背景: 面板加载背景图", panel._container.has_background())
+        panel.set_background("")
+        report("背景: 清除背景恢复白底", not panel._container.has_background())
+    sw_bg = SettingsWindow(cfg)
+    sw_bg._on_bg_clear()
+    report("背景: 设置窗口清除信号", sw_bg._pending_bg == "")
+    report("背景: 配置默认无背景", cfg.get("panel.background", "") == "")
+
     print("=" * 50)
     print("功能测试：通过 {} 项，失败 {} 项".format(PASS, FAIL))
     import shutil

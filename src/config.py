@@ -23,7 +23,10 @@ class ConfigManager:
 
     # 默认配置项（与需求保持一致）
     DEFAULT_CONFIG = {
-        "panel": {"x": 100, "y": 100, "width": 320, "height": 120, "opacity": 0.85},
+        "panel": {
+            "x": 100, "y": 100, "width": 320, "height": 120,
+            "opacity": 0.85, "background": "",
+        },
         "review": {"interval": 10, "auto_start": True},
         "shortcut": {"input": "Ctrl+Alt+W", "toggle": "Ctrl+Alt+S"},
         "auto_launch": False,

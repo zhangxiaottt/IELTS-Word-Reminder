@@ -30,6 +30,51 @@ def get_asset_path(name: str) -> str:
     return os.path.join(BASE_DIR, "assets", name)
 
 
+def get_backgrounds_dir() -> str:
+    """返回背景图目录 assets/backgrounds 的绝对路径（不存在则创建）"""
+    path = os.path.join(BASE_DIR, "assets", "backgrounds")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+    return path
+
+
+def resolve_asset_rel(path: str) -> str:
+    """把配置里存储的背景图路径解析为绝对路径
+
+    兼容两种存储形式：
+    - 相对路径（相对项目根，如 "assets/backgrounds/xxx.png"，打包后仍可用）
+    - 绝对路径（旧版本或外部路径）
+    文件不存在或为空时返回空字符串。
+    """
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return path if os.path.exists(path) else ""
+    full = os.path.join(BASE_DIR, path)
+    return full if os.path.exists(full) else ""
+
+
+def copy_file_to_backgrounds(src: str) -> str:
+    """把用户选择的图片复制到 assets/backgrounds，返回相对路径
+
+    复制到项目内而非直接引用原路径，保证打包/移动项目后背景图不失效。
+    失败返回空字符串。
+    """
+    try:
+        import shutil
+        import time
+        import uuid
+        ext = os.path.splitext(src)[1].lower() or ".png"
+        name = "{}_{}{}".format(int(time.time()), uuid.uuid4().hex[:6], ext)
+        dest = os.path.join(get_backgrounds_dir(), name)
+        shutil.copy2(src, dest)
+        return os.path.relpath(dest, BASE_DIR)
+    except Exception:
+        return ""
+
+
 def get_main_py_path() -> str:
     """返回主程序 main.py 的绝对路径（用于开机自启）"""
     return os.path.join(BASE_DIR, "main.py")
