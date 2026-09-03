@@ -2,25 +2,25 @@
 """桌面小宠模块 - DesktopPet
 
 一只 Q 版双马尾少女（粉色系，与面板背景预设同角色）：
-- 默认驻留「悬浮面板内部」（底部居中），随面板移动/缩放自动跟随
+- 默认站在「悬浮面板正下方」（水平居中、贴住下缘），随面板移动/缩放自动跟随
 - 支持鼠标拖拽到屏幕任意位置，松开后在该处附近自由活动（自由模式）
-- 简单动画（全部平面/2D）：
-    * 上下轻微浮动 + 左右摇摆（正弦）
-    * 定时「点头」（绕底部中心轻微旋转）
+- 简单动画（全部平面/2D，无旋转，避免"模子不动"的割裂感）：
+    * 上下轻微浮动 + 左右游走（正弦，平滑连贯）
+    * 轻微「呼吸」：脚底固定、身体微微收放（替代生硬的整体倾斜）
     * 定时「眨眼」（睁眼帧 ↔ 闭眼帧切换，多帧动画）
-    * 点击「跳跃」反应 + 弹出气泡说话
+    * 点击「跳跃」反应 + 头顶弹出带小尾巴的圆角气泡说出当前单词词义
 - 右键菜单：回到面板内 / 隐藏小宠
-- 窗口按角色像素生成掩码：透明区域可穿透点击到下层面板，
-  驻留面板内时不会挡住按钮操作
+- 窗口按角色像素生成掩码：透明区域可穿透点击到下层面板
 """
 import math
 import random
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPixmap, QPainter, QRegion, QColor
-from PySide6.QtWidgets import (
-    QApplication, QWidget, QLabel, QMenu,
+from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF
+from PySide6.QtGui import (
+    QPixmap, QPainter, QRegion, QColor, QPen, QFont,
+    QPainterPath, QPolygonF,
 )
+from PySide6.QtWidgets import QApplication, QWidget, QMenu
 
 from .utils import get_asset_path, condense_meaning
 
@@ -28,11 +28,88 @@ from .utils import get_asset_path, condense_meaning
 SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
 SPRITE_BLINK = "pets/pet_1_blink.png"   # 闭眼（眨眼）帧
 
-# 点击时的气泡文案
+# 点击时的气泡文案（词库为空时的兜底）
 BUBBLE_TEXTS = [
     "背单词啦！", "加油鸭~", "今天背了吗？", "嘿嘿，我在这儿~",
     "复习时间到！", "学累了就歇会儿~", "你认真的样子真好看~",
 ]
+
+
+class _SpeechBubble(QWidget):
+    """自绘对话气泡：圆角矩形 + 指向下方/上方的三角小尾巴
+
+    白色底、淡蓝描边，文字居中换行；单独顶层窗口，不参与鼠标事件。
+    """
+
+    MAX_W = 300      # 最大宽度（像素），超长自动换行
+    PAD = 14         # 内边距
+    TAIL = 12        # 尾巴高度
+    RADIUS = 14      # 圆角半径
+
+    def __init__(self, parent: QWidget = None):
+        super().__init__(
+            parent,
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            | Qt.WindowTransparentForInput,
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setFont(QFont("Microsoft YaHei", 14))
+        self._text = ""
+        self._tail_down = True   # 尾巴朝下（气泡在宠物上方时指向宠物头部）
+        self.hide()
+
+    def set_content(self, text: str, tail_down: bool) -> None:
+        """设置文字与尾巴方向，并据此计算窗口尺寸"""
+        self._text = text
+        self._tail_down = tail_down
+        fm = self.fontMetrics()
+        # 用最大宽度计算换行后的文本包围盒
+        rect = fm.boundingRect(
+            QRect(0, 0, self.MAX_W - self.PAD * 2, 10000),
+            Qt.TextWordWrap, text,
+        )
+        w = min(self.MAX_W, rect.width() + self.PAD * 2 + 2)
+        h = rect.height() + self.PAD * 2 + self.TAIL + 2
+        self.setFixedSize(w, h)
+        self.update()
+
+    def text(self) -> str:
+        """当前气泡文字（便于测试/外部读取）"""
+        return self._text
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cx = w / 2.0
+        body = QRectF(1, 1, w - 2, h - self.TAIL - 1)
+        path = QPainterPath()
+        path.addRoundedRect(body, self.RADIUS, self.RADIUS)
+        # 三角尾巴（朝下指向宠物，或朝上）
+        if self._tail_down:
+            tri = QPolygonF([
+                QPointF(cx - 9, h - self.TAIL - 2),
+                QPointF(cx + 9, h - self.TAIL - 2),
+                QPointF(cx, h - 1),
+            ])
+        else:
+            tri = QPolygonF([
+                QPointF(cx - 9, self.TAIL + 2),
+                QPointF(cx + 9, self.TAIL + 2),
+                QPointF(cx, 1),
+            ])
+        path.addPolygon(tri)
+        painter.setPen(QPen(QColor("#4A90E2"), 1.5))
+        painter.setBrush(QColor("#FFFFFF"))
+        painter.drawPath(path)
+        # 文字
+        text_rect = QRectF(
+            self.PAD, self.PAD, w - self.PAD * 2, h - self.TAIL - self.PAD * 2,
+        )
+        painter.setPen(QColor("#333333"))
+        painter.drawText(text_rect, Qt.TextWordWrap | Qt.AlignCenter, self._text)
+        painter.end()
 
 
 class DesktopPet(QWidget):
@@ -44,8 +121,8 @@ class DesktopPet(QWidget):
     BOB_SPEED = 0.14         # 浮动角速度
     WANDER_STEP = 1.2        # 每帧游走步长（像素）
     HOP_POWER = 40           # 点击跳跃初始高度（像素）
-    NOD_AMP = 8              # 点头最大角度（度）
-    NOD_TICKS = 20           # 一次点头持续帧数（约 660ms）
+    BREATH_SPEED = 0.30      # 呼吸动画角速度
+    BREATH_AMP = 0.035       # 呼吸缩放幅度（比例）
     MASK_ALPHA = 40          # 掩码阈值：高于该透明度的像素才可交互
     CLICK_MOVE = 5           # 超过该位移视为拖拽（否则视为点击）
 
@@ -81,40 +158,19 @@ class DesktopPet(QWidget):
         self._build_mask()
 
         # 动画 / 交互状态
-        self._mode = "dock"          # dock=驻留面板内 / free=自由活动
+        self._mode = "dock"          # dock=驻留面板 / free=自由活动
         self._t = 0                  # 时间步
         self._wander = 0.0           # 当前水平偏移
         self._target_dx = 0          # 目标水平偏移
         self._hop = 0                # 跳跃高度（逐帧衰减）
-        self._nod_angle = 0.0        # 点头当前角度
-        self._nod_progress = None    # 点头进度（None=未在点头）
+        self._breath = 0.0           # 呼吸缩放比例（-Amp ~ +Amp）
         self._base_pos = (0, 0)      # 锚点（左上角）
         self._dragging = False       # 是否正在拖拽
         self._drag_press_global = None
         self._drag_offset = None
 
-        # 气泡
-        self._bubble = QLabel(
-            None,
-            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-            | Qt.WindowTransparentForInput,
-        )
-        self._bubble.setAttribute(Qt.WA_TranslucentBackground)
-        self._bubble.setAttribute(Qt.WA_ShowWithoutActivating)
-        self._bubble.setAlignment(Qt.AlignCenter)
-        self._bubble.setWordWrap(True)
-        self._bubble.setMaximumWidth(300)
-        self._bubble.setStyleSheet(
-            "QLabel {"
-            "  background: #FFFFFF;"
-            "  border: 1px solid #4A90E2;"
-            "  border-radius: 12px;"
-            "  padding: 8px 14px;"
-            "  color: #333333;"
-            "  font-size: 15px;"
-            "}"
-        )
-        self._bubble.hide()
+        # 气泡（自绘：圆角 + 尾巴）
+        self._bubble = _SpeechBubble()
 
         # 定时器
         self._timer = QTimer(self)
@@ -124,10 +180,6 @@ class DesktopPet(QWidget):
         self._wander_timer = QTimer(self)
         self._wander_timer.timeout.connect(self._pick_target)
         self._wander_timer.start(random.randint(2500, 5000))
-
-        self._nod_timer = QTimer(self)
-        self._nod_timer.timeout.connect(self._start_nod)
-        self._nod_timer.start(random.randint(3500, 5500))
 
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._do_blink)
@@ -139,7 +191,7 @@ class DesktopPet(QWidget):
     def _build_mask(self) -> None:
         """按当前显示帧的非透明像素生成窗口掩码
 
-        这样驻留在面板内时，只有角色实体能接收鼠标，透明处点击穿透到面板。
+        只有角色实体能接收鼠标，透明处点击穿透到面板。
         """
         if self._pixmap.isNull():
             self.clearMask()
@@ -228,12 +280,6 @@ class DesktopPet(QWidget):
     # ------------------------------------------------------------------ #
     # 动画
     # ------------------------------------------------------------------ #
-    def _start_nod(self) -> None:
-        """启动一次点头（绕底部中心俯仰再回正）"""
-        if self.isVisible():
-            self._nod_progress = 0
-            self._nod_timer.start(random.randint(3500, 5500))
-
     def _do_blink(self) -> None:
         """切换到闭眼帧，140ms 后恢复睁眼"""
         if not self.isVisible():
@@ -249,20 +295,12 @@ class DesktopPet(QWidget):
         self.update()
 
     def _tick(self) -> None:
-        """动画主循环：浮动 + 游走 + 点头 + 跳跃"""
+        """动画主循环：浮动 + 游走 + 呼吸 + 跳跃（无旋转，保持连贯）"""
         self._t += 1
         if not self.isVisible() or not self._panel.isVisible() or self._dragging:
             return
-        # 点头角度
-        if self._nod_progress is not None:
-            self._nod_progress += 1
-            p = self._nod_progress / float(self.NOD_TICKS)
-            self._nod_angle = math.sin(math.pi * min(p, 1.0)) * self.NOD_AMP
-            if p >= 1.0:
-                self._nod_angle = 0.0
-                self._nod_progress = None
-        else:
-            self._nod_angle = 0.0
+        # 呼吸：正弦缩放比例
+        self._breath = math.sin(self._t * self.BREATH_SPEED) * self.BREATH_AMP
         # 左右游走：逐步逼近目标偏移
         dx = self._wander
         if abs(self._target_dx - dx) <= self.WANDER_STEP:
@@ -290,20 +328,19 @@ class DesktopPet(QWidget):
             self.move(x, y)
 
     def paintEvent(self, event) -> None:
-        """绘制当前帧（带点头旋转）"""
+        """绘制当前帧：脚底固定做轻微「呼吸」缩放（无旋转，避免割裂感）"""
         if self._pixmap.isNull():
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        if abs(self._nod_angle) > 0.1:
-            painter.save()
-            painter.translate(self.width() / 2.0, self.height())
-            painter.rotate(self._nod_angle)
-            painter.translate(-self.width() / 2.0, -self.height())
-            painter.drawPixmap(0, 0, self.width(), self.height(), self._pixmap)
-            painter.restore()
-        else:
-            painter.drawPixmap(0, 0, self.width(), self.height(), self._pixmap)
+        w, h = self.width(), self.height()
+        # 呼吸：身体纵向轻微收放、横向轻微反向补偿，脚底保持不动
+        scale_y = 1.0 + self._breath
+        scale_x = 1.0 - self._breath * 0.5
+        painter.translate(w / 2.0, h)
+        painter.scale(scale_x, scale_y)
+        painter.translate(-w / 2.0, -h)
+        painter.drawPixmap(0, 0, w, h, self._pixmap)
         painter.end()
 
     # ------------------------------------------------------------------ #
@@ -343,7 +380,7 @@ class DesktopPet(QWidget):
                 self._wander = 0.0
                 self._target_dx = 0
             else:
-                # 点击：跳跃 + 冒气泡
+                # 点击：跳跃 + 冒气泡（说出当前单词词义）
                 self._hop = self.HOP_POWER
                 self.show_bubble()
             event.accept()
@@ -351,10 +388,10 @@ class DesktopPet(QWidget):
         super().mouseReleaseEvent(event)
 
     def show_bubble(self, text: str = None) -> None:
-        """在宠物上方弹出气泡（1.8 秒后自动消失）
+        """在宠物头顶弹出带尾巴的气泡（1.8 秒后自动消失）
 
         默认显示「当前单词的词义」（如：apple：n. 苹果）；
-        词库为空时显示随机鼓励语。
+        词库为空时显示随机鼓励语。上方放不下时放到宠物下方。
         """
         if text is None:
             row = self._panel.current_word_row()
@@ -364,21 +401,29 @@ class DesktopPet(QWidget):
                 text = "{}：{}".format(word, meaning) if meaning else word
             else:
                 text = random.choice(BUBBLE_TEXTS)
-        self._bubble.setText(text)
-        self._bubble.adjustSize()
-        # 气泡显示在宠物上方居中，避免超出屏幕
         scr = self._screen()
-        if scr is not None:
-            ag = scr.availableGeometry()
-        else:
-            ag = None
+        ag = scr.availableGeometry() if scr is not None else None
+        # 先假设放在宠物上方（尾巴朝下指向头部）
+        tail_down = True
+        bw = self._bubble.width() or 160
+        bh = self._bubble.height() or 50
+        x = self.x() + (self.width() - bw) // 2
+        y = self.y() - bh - 4
+        if ag is not None and y < ag.y() + 4:
+            # 上方放不下 → 放到宠物下方，尾巴朝上
+            tail_down = False
+            y = self.y() + self.height() + 4
+        if ag is not None:
+            x = max(ag.x() + 4, min(ag.x() + ag.width() - bw - 4, x))
+        self._bubble.set_content(text, tail_down)
+        # set_content 后尺寸可能变化，重新定位（保持横向居中）
         x = self.x() + (self.width() - self._bubble.width()) // 2
-        y = self.y() - self._bubble.height() - 6
         if ag is not None:
             x = max(ag.x() + 4, min(ag.x() + ag.width() - self._bubble.width() - 4, x))
-            if y < ag.y() + 4:
-                # 上方放不下时放到宠物下方
-                y = self.y() + self.height() + 6
+        if tail_down:
+            y = self.y() - self._bubble.height() - 4
+        else:
+            y = self.y() + self.height() + 4
         self._bubble.move(x, y)
         self._bubble.show()
         self._bubble.raise_()
