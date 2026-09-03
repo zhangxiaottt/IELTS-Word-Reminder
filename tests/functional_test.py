@@ -233,6 +233,28 @@ def main():
     report("背景: 设置窗口清除信号", sw_bg._pending_bg == "")
     report("背景: 配置默认无背景", cfg.get("panel.background", "") == "")
 
+    # ---- 8. 桌宠：角色加载 / 锚定 / 动画 / 配置开关 ----
+    from src.desktop_pet import DesktopPet
+    pet = DesktopPet(cfg, panel)
+    panel.show()
+    pet.show()
+    pet.anchor()
+    report("桌宠: 角色图已加载", not pet._pixmap.isNull())
+    g = panel.geometry()
+    report("桌宠: 锚定在面板下缘",
+           pet.y() >= g.y() + g.height() and g.x() - 80 <= pet.x() <= g.x() + g.width(),
+           "pet=({},{}) panel=(y{} h{})".format(pet.x(), pet.y(), g.y(), g.height()))
+    # 动画 tick 能推进位置
+    pet._t = 0
+    pet._target_dx = 5
+    before = (pet.x(), pet.y())
+    pet._tick()
+    after = (pet.x(), pet.y())
+    report("桌宠: 动画驱动移动", after != before,
+           "before={} after={}".format(before, after))
+    report("桌宠: 配置默认开启", cfg.get("panel.pet_enabled", True) is True)
+    pet.hide()
+
     print("=" * 50)
     print("功能测试：通过 {} 项，失败 {} 项".format(PASS, FAIL))
     import shutil

@@ -115,6 +115,14 @@ class SettingsWindow(QDialog):
         )
         layout.addWidget(self._auto_launch_check)
 
+        # 桌宠开关（Q版小人跟随面板）
+        self._pet_check = QCheckBox("显示桌宠（Q版小人跟随面板）", self)
+        self._pet_check.setStyleSheet(
+            "QCheckBox { font-size: 13px; color: #333333; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+        )
+        layout.addWidget(self._pet_check)
+
         layout.addWidget(self._divider())
 
         # 4. 面板背景（静态背景图）
@@ -329,6 +337,8 @@ class SettingsWindow(QDialog):
         self._opacity_slider.setValue(int(round(max(0.5, min(1.0, opacity)) * 100)))
         # 开机自启状态与注册表对齐
         self._auto_launch_check.setChecked(get_auto_launch_enabled())
+        # 桌宠开关
+        self._pet_check.setChecked(bool(self._config.get("panel.pet_enabled", True)))
         # 背景图（仅填充预览，不重新发出信号；面板已在启动时加载）
         self._pending_bg = str(self._config.get("panel.background", "") or "")
         self._update_preview(self._pending_bg)
@@ -352,6 +362,7 @@ class SettingsWindow(QDialog):
             "panel.opacity", self._opacity_slider.value() / 100.0
         )
         self._config.set("panel.background", self._pending_bg)
+        self._config.set("panel.pet_enabled", self._pet_check.isChecked())
         # 开机自启写入注册表
         enabled = self._auto_launch_check.isChecked()
         self._config.set("auto_launch", enabled)

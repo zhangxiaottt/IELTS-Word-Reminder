@@ -218,6 +218,7 @@ class FloatPanel(QWidget):
     open_library = Signal()          # 请求打开单词库管理窗口
     open_test_mode = Signal()        # 请求打开测试模式窗口
     request_quit = Signal()          # 请求退出程序
+    geometry_changed = Signal()      # 面板位置/大小变化（供桌宠跟随）
 
     # 右下角缩放热区尺寸（像素）
     RESIZE_ZONE = 10
@@ -440,7 +441,7 @@ class FloatPanel(QWidget):
         self._config.save()
 
     def resizeEvent(self, event) -> None:
-        """窗口大小变化时，将缩放手柄固定到右下角"""
+        """窗口大小变化时，将缩放手柄固定到右下角，并通知桌宠跟随"""
         grip = getattr(self, "_grip", None)
         if grip is not None:
             grip.move(
@@ -448,6 +449,12 @@ class FloatPanel(QWidget):
                 self.height() - grip.height() - 2,
             )
         super().resizeEvent(event)
+        self.geometry_changed.emit()
+
+    def moveEvent(self, event) -> None:
+        """窗口移动时通知桌宠跟随"""
+        super().moveEvent(event)
+        self.geometry_changed.emit()
 
     # ------------------------------------------------------------------ #
     # 轮播逻辑

@@ -25,7 +25,7 @@ class ConfigManager:
     DEFAULT_CONFIG = {
         "panel": {
             "x": 100, "y": 100, "width": 320, "height": 120,
-            "opacity": 0.85, "background": "",
+            "opacity": 0.85, "background": "", "pet_enabled": True,
         },
         "review": {"interval": 10, "auto_start": True},
         "shortcut": {"input": "Ctrl+Alt+W", "toggle": "Ctrl+Alt+S"},

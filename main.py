@@ -40,6 +40,7 @@ from src.input_widget import InputWidget  # noqa: E402
 from src.settings_window import SettingsWindow  # noqa: E402
 from src.word_library_window import WordLibraryWindow  # noqa: E402
 from src.test_mode_window import TestModeWindow  # noqa: E402
+from src.desktop_pet import DesktopPet  # noqa: E402
 
 # 统一主题色
 COLOR_PRIMARY = "#4A90E2"
@@ -95,6 +96,10 @@ class MainApp:
         # ---- 核心：复习悬浮面板 ----
         self.panel = FloatPanel(self.config, self.wm)
 
+        # ---- 桌面小宠：跟随悬浮面板（Q版少女） ----
+        self.pet = DesktopPet(self.config, self.panel)
+        self.panel.geometry_changed.connect(self.pet.anchor)
+
         # ---- 懒加载窗口 ----
         self._input_widget = None
         self._settings_window = None
@@ -109,6 +114,20 @@ class MainApp:
 
         # 启动时显示悬浮面板（程序本体常驻托盘）
         self.panel.show()
+        # 桌宠默认随面板显示（由配置控制开关）
+        self._update_pet_visibility()
+
+    def _update_pet_visibility(self) -> None:
+        """根据配置与面板显隐状态决定桌宠是否显示"""
+        try:
+            show = bool(self.config.get("panel.pet_enabled", True)) and self.panel.isVisible()
+            if show:
+                self.pet.anchor()
+                self.pet.show()
+            else:
+                self.pet.hide()
+        except Exception:
+            pass  # 桌宠异常不影响程序
 
     # ------------------------------------------------------------------ #
     # 系统托盘
@@ -143,12 +162,13 @@ class MainApp:
         self.tray.show()
 
     def _on_tray_activated(self, reason) -> None:
-        """托盘图标激活：左键单击切换面板显隐"""
+        """托盘图标激活：左键单击切换面板显隐（桌宠随动）"""
         if reason == QSystemTrayIcon.Trigger:
             if self.panel.isVisible():
                 self.panel.hide()
             else:
                 self.panel.show()
+            self._update_pet_visibility()
 
     # ------------------------------------------------------------------ #
     # 信号连接
@@ -213,6 +233,7 @@ class MainApp:
             self._settings_window.interval_changed.connect(self.panel.set_interval)
             self._settings_window.opacity_changed.connect(self.panel.set_opacity)
             self._settings_window.background_changed.connect(self.panel.set_background)
+            self._settings_window.applied.connect(self._on_settings_applied)
             # 取消时回滚实时预览到已保存配置
             self._settings_window.canceled.connect(self._rollback_settings)
             self._settings_window.destroyed.connect(
@@ -227,6 +248,11 @@ class MainApp:
         self.panel.set_interval(int(self.config.get("review.interval", 10)))
         self.panel.set_opacity(float(self.config.get("panel.opacity", 0.85)))
         self.panel.set_background(str(self.config.get("panel.background", "") or ""))
+        self._update_pet_visibility()
+
+    def _on_settings_applied(self) -> None:
+        """设置确定后：按新配置更新桌宠显隐"""
+        self._update_pet_visibility()
 
     def open_library_window(self) -> None:
         """打开单词库管理窗口（单实例，数据变化刷新面板）"""
