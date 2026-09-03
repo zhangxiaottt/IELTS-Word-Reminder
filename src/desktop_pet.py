@@ -15,7 +15,7 @@
 import math
 import random
 
-from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF
+from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF, QPropertyAnimation
 from PySide6.QtGui import (
     QPixmap, QPainter, QRegion, QColor, QPen, QFont,
     QPainterPath, QPolygonF,
@@ -36,15 +36,19 @@ BUBBLE_TEXTS = [
 
 
 class _SpeechBubble(QWidget):
-    """自绘对话气泡：圆角矩形 + 指向下方/上方的三角小尾巴
+    """自绘对话气泡：柔粉色圆角矩形 + 小三角尾巴 + 淡入动画
 
-    白色底、淡蓝描边，文字居中换行；单独顶层窗口，不参与鼠标事件。
+    柔粉色系与粉色系角色协调，白色文字区、圆润可爱；
+    单独顶层窗口，不参与鼠标事件。
     """
 
-    MAX_W = 300      # 最大宽度（像素），超长自动换行
+    MAX_W = 280      # 最大宽度（像素），超长自动换行
     PAD = 14         # 内边距
-    TAIL = 12        # 尾巴高度
-    RADIUS = 14      # 圆角半径
+    TAIL = 9         # 尾巴高度
+    RADIUS = 16      # 圆角半径
+    FILL = "#FFF1F4"          # 气泡底色（柔粉白）
+    BORDER = "#F2B8C8"        # 描边（柔粉）
+    TEXT = "#5A4B4E"          # 文字（暖深灰）
 
     def __init__(self, parent: QWidget = None):
         super().__init__(
@@ -57,7 +61,16 @@ class _SpeechBubble(QWidget):
         self.setFont(QFont("Microsoft YaHei", 14))
         self._text = ""
         self._tail_down = True   # 尾巴朝下（气泡在宠物上方时指向宠物头部）
+        # 淡入动画
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.setDuration(160)
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
         self.hide()
+
+    def text(self) -> str:
+        """当前气泡文字（便于测试/外部读取）"""
+        return self._text
 
     def set_content(self, text: str, tail_down: bool) -> None:
         """设置文字与尾巴方向，并据此计算窗口尺寸"""
@@ -74,9 +87,10 @@ class _SpeechBubble(QWidget):
         self.setFixedSize(w, h)
         self.update()
 
-    def text(self) -> str:
-        """当前气泡文字（便于测试/外部读取）"""
-        return self._text
+    def fade_in(self) -> None:
+        """淡入动画（每次显示前调用）"""
+        self._fade.stop()
+        self._fade.start()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -86,28 +100,28 @@ class _SpeechBubble(QWidget):
         body = QRectF(1, 1, w - 2, h - self.TAIL - 1)
         path = QPainterPath()
         path.addRoundedRect(body, self.RADIUS, self.RADIUS)
-        # 三角尾巴（朝下指向宠物，或朝上）
+        # 小三角尾巴（朝下指向宠物，或朝上）
         if self._tail_down:
             tri = QPolygonF([
-                QPointF(cx - 9, h - self.TAIL - 2),
-                QPointF(cx + 9, h - self.TAIL - 2),
+                QPointF(cx - 8, h - self.TAIL - 2),
+                QPointF(cx + 8, h - self.TAIL - 2),
                 QPointF(cx, h - 1),
             ])
         else:
             tri = QPolygonF([
-                QPointF(cx - 9, self.TAIL + 2),
-                QPointF(cx + 9, self.TAIL + 2),
+                QPointF(cx - 8, self.TAIL + 2),
+                QPointF(cx + 8, self.TAIL + 2),
                 QPointF(cx, 1),
             ])
         path.addPolygon(tri)
-        painter.setPen(QPen(QColor("#4A90E2"), 1.5))
-        painter.setBrush(QColor("#FFFFFF"))
+        painter.setPen(QPen(QColor(self.BORDER), 1.2))
+        painter.setBrush(QColor(self.FILL))
         painter.drawPath(path)
         # 文字
         text_rect = QRectF(
             self.PAD, self.PAD, w - self.PAD * 2, h - self.TAIL - self.PAD * 2,
         )
-        painter.setPen(QColor("#333333"))
+        painter.setPen(QColor(self.TEXT))
         painter.drawText(text_rect, Qt.TextWordWrap | Qt.AlignCenter, self._text)
         painter.end()
 
@@ -427,6 +441,7 @@ class DesktopPet(QWidget):
         self._bubble.move(x, y)
         self._bubble.show()
         self._bubble.raise_()
+        self._bubble.fade_in()
         QTimer.singleShot(1800, self._bubble.hide)
 
     def contextMenuEvent(self, event) -> None:
