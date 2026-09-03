@@ -13,8 +13,10 @@
     单词行（加粗、主色调）→ 音标行（灰色小字）→ 释义行 → 例句行（超长截断+悬停提示）
     → 底部按钮行：「认识」「不认识」+ 右侧「暂停/继续」「下一个」
 """
-from PySide6.QtCore import Qt, QTimer, Signal, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QPainterPath
+from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QPointF
+from PySide6.QtGui import (
+    QColor, QPainter, QPen, QPixmap, QPainterPath, QLinearGradient,
+)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMenu, QGraphicsDropShadowEffect,
@@ -120,26 +122,47 @@ class ElideLabel(QLabel):
 
 
 class BackgroundCard(QWidget):
-    """圆角卡片容器：支持设置静态背景图
+    """圆角卡片容器：默认绘制成「粉色小屋」样式，也支持普通背景图
 
-    - 未设置背景图：绘制白色圆角底 + 边框（与原面板一致）
-    - 设置背景图：等比放大铺满 + 居中裁剪 + 圆角裁切，
-      并叠加一层半透明白遮罩保证前景文字始终可读
-    - 背景图按当前尺寸预缩放缓存，拖动/缩放时不重复缩放大图
+    - 房子样式（panel.house=True，默认开启）：屋顶 + 大窗户（文字区）+ 草地小花，
+      整体随面板尺寸自适应，文字显示在窗户里、按钮放在草地方向上，配套桌宠角色
+    - 普通样式：未设置背景图时绘制白色圆角底 + 边框；
+      设置背景图时等比放大铺满 + 居中裁剪 + 圆角裁切 + 半透明白遮罩
     """
 
     RADIUS = 10            # 圆角半径（像素）
-    OVERLAY_ALPHA = 150    # 背景图上白色遮罩透明度（0~255，越大文字越清晰）
+    OVERLAY_ALPHA = 150    # 背景图上白色遮罩透明度（0~255）
+
+    # ---- 房子样式参数（随面板尺寸自适应）----
+    ROOF_RATIO = 0.20      # 屋顶高度占面板高度的比例
+    ROOF_MIN = 24          # 屋顶最小高度（像素）
+    ROOF_MAX = 46          # 屋顶最大高度（像素）
+    WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
+    BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self._bg_pixmap = None   # 原始背景图
         self._bg_scaled = None   # 按当前尺寸缩放后的缓存
+        self._house_mode = True  # 是否绘制「房子样式」（默认开启）
         self.setMouseTracking(True)
 
     # ------------------------------------------------------------------ #
     # 对外接口
     # ------------------------------------------------------------------ #
+    def set_house_mode(self, enabled: bool) -> None:
+        """切换房子样式；关闭后回到普通白底/背景图样式"""
+        self._house_mode = bool(enabled)
+        self.update()
+
+    def house_enabled(self) -> bool:
+        """当前是否为房子样式"""
+        return self._house_mode
+
+    def roof_height(self) -> int:
+        """按当前高度计算屋顶高度（像素）"""
+        return max(self.ROOF_MIN, min(self.ROOF_MAX, int(self.height() * self.ROOF_RATIO)))
+
     def set_background(self, path: str) -> None:
         """设置背景图；path 为空或加载失败则清除背景，恢复白色底"""
         try:
@@ -182,7 +205,7 @@ class BackgroundCard(QWidget):
         )
 
     def paintEvent(self, event) -> None:
-        """绘制圆角底（白底或背景图+遮罩）与边框"""
+        """绘制圆角底（房子 / 白底 / 背景图+遮罩）与边框"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -190,7 +213,10 @@ class BackgroundCard(QWidget):
         path.addRoundedRect(rect, self.RADIUS, self.RADIUS)
         painter.setClipPath(path)
 
-        if self._bg_scaled is not None:
+        if self._house_mode:
+            # 房子样式：屋顶 + 窗户 + 草地
+            self._draw_house(painter, rect)
+        elif self._bg_scaled is not None:
             # 等比铺满并居中（裁掉超出部分）
             x = (self.width() - self._bg_scaled.width()) // 2
             y = (self.height() - self._bg_scaled.height()) // 2
@@ -207,6 +233,122 @@ class BackgroundCard(QWidget):
         painter.drawPath(path)
         painter.end()
         super().paintEvent(event)
+
+    # ------------------------------------------------------------------ #
+    # 房子样式绘制
+    # ------------------------------------------------------------------ #
+    def _draw_house(self, painter: QPainter, rect: QRectF) -> None:
+        """绘制粉色小屋：屋顶 + 大窗户（文字区） + 底部草地与小花
+
+        与桌宠（粉色双马尾少女）同一色系，让小人住进这间小房子。
+        """
+        W = rect.width()
+        H = rect.height()
+        roof_h = self.roof_height()
+
+        # ---- 墙体（奶油色）----
+        painter.fillRect(QRectF(0, roof_h, W, H - roof_h), QColor("#FFF6F0"))
+
+        # ---- 屋顶：粉色梯形 + 花边底沿（像小木屋的瓦檐）----
+        inset = max(8, min(22, int(W * 0.05)))
+        roof_path = QPainterPath()
+        roof_path.moveTo(0, 0)
+        roof_path.lineTo(W, 0)
+        roof_path.lineTo(W - inset, roof_h)
+        n = max(4, int((W - 2 * inset) // 26))       # 花边个数
+        spacing = (W - 2 * inset) / n
+        sc = max(4, min(8, int(roof_h * 0.28)))      # 花边下凸深度
+        for i in range(n - 1, -1, -1):
+            cx = inset + spacing * (i + 0.5)
+            xr = cx + spacing / 2.0
+            xl = cx - spacing / 2.0
+            if i == n - 1:
+                xr = W - inset
+            roof_path.lineTo(xr, roof_h)
+            roof_path.quadTo(cx, roof_h + sc, xl, roof_h)
+        roof_path.lineTo(inset, roof_h)
+        roof_path.closeSubpath()
+        grad = QLinearGradient(0, 0, 0, roof_h + sc)
+        grad.setColorAt(0.0, QColor("#FFC2CF"))
+        grad.setColorAt(1.0, QColor("#FF9FB4"))
+        painter.setPen(QPen(QColor("#F48BA6"), 1.2))
+        painter.setBrush(grad)
+        painter.drawPath(roof_path)
+
+        # 屋顶瓦片纹（几条浅色横线，柔和）
+        painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        for frac in (0.35, 0.62, 0.88):
+            yy = int(roof_h * frac)
+            painter.drawLine(QPointF(4, yy), QPointF(W - 4, yy))
+
+        # 屋顶中心小爱心徽标
+        self._draw_heart(painter, W / 2.0, roof_h * 0.42, 5.0, QColor("#FF6F91"))
+        # 右侧烟囱 + 爱心小烟
+        ch_x = W - inset - 28
+        chimney = QRectF(ch_x, 4, 16, max(10, roof_h - 16))
+        painter.setPen(QPen(QColor("#E87A95"), 1))
+        painter.setBrush(QColor("#F79BB1"))
+        painter.drawRoundedRect(chimney, 4, 4)
+        self._draw_heart(painter, ch_x + 8, roof_h - 6, 3.2, QColor("#FF9FB4"))
+        self._draw_heart(painter, ch_x + 22, roof_h - 4, 2.6, QColor("#FFC0CB"))
+
+        # ---- 大窗户（文字区）：浅蓝玻璃 + 粉色窗框 + 窗台 ----
+        wy = roof_h - 2
+        ww = W - 22
+        wh = max(self.WINDOW_MIN_H, H - wy - self.BOTTOM_BAND)
+        if wh > H - wy - 8:
+            wh = H - wy - 8
+        wx = (W - ww) / 2.0
+        glass = QLinearGradient(0, wy, 0, wy + wh)
+        glass.setColorAt(0.0, QColor(232, 244, 255, 165))
+        glass.setColorAt(1.0, QColor(214, 234, 255, 150))
+        win_path = QPainterPath()
+        win_path.addRoundedRect(QRectF(wx, wy, ww, wh), 12, 12)
+        painter.fillPath(win_path, glass)
+        painter.setPen(QPen(QColor("#F2A0B5"), 3))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(win_path)
+        painter.setPen(QPen(QColor(255, 255, 255, 210), 2))
+        painter.drawRoundedRect(QRectF(wx + 3, wy + 3, ww - 6, wh - 6), 10, 10)
+        # 窗台（窗下粉色小横条）
+        sill = QRectF(wx - 4, wy + wh - 3, ww + 8, 7)
+        painter.setPen(QPen(QColor("#F48BA6"), 1))
+        painter.setBrush(QColor("#FFC9D6"))
+        painter.drawRoundedRect(sill, 3, 3)
+
+        # ---- 底部草地 + 小花 ----
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(191, 232, 200, 235))
+        painter.drawRect(QRectF(0, H - 12, W, 12))
+        for fx in (8, 18, 28, W - 28, W - 18, W - 8):
+            self._draw_flower(painter, fx, H - 5)
+
+    @staticmethod
+    def _draw_heart(painter: QPainter, cx: float, cy: float, s: float, color: QColor) -> None:
+        """绘制一颗小爱心（小屋装饰）"""
+        painter.save()
+        painter.translate(cx, cy)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        path = QPainterPath()
+        path.moveTo(0, s * 0.9)
+        path.cubicTo(-s * 1.3, -s * 0.2, -s * 0.6, -s * 1.1, 0, -s * 0.35)
+        path.cubicTo(s * 0.6, -s * 1.1, s * 1.3, -s * 0.2, 0, s * 0.9)
+        painter.drawPath(path)
+        painter.restore()
+
+    @staticmethod
+    def _draw_flower(painter: QPainter, x: float, y: float) -> None:
+        """绘制一朵五瓣小花（草地装饰），颜色按位置取粉色/浅黄"""
+        r = 3.4
+        colors = ("#FF8FB1", "#FFB3C1", "#FFF2B2")
+        color = colors[int(x) % len(colors)]
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(color))
+        for dx, dy in ((-r, 0), (r, 0), (0, -r), (0, r)):
+            painter.drawEllipse(QPointF(x + dx, y + dy), r * 0.62, r * 0.62)
+        painter.setBrush(QColor("#FFF7D6"))
+        painter.drawEllipse(QPointF(x, y), r * 0.5, r * 0.5)
 
 
 class FloatPanel(QWidget):
@@ -279,6 +421,8 @@ class FloatPanel(QWidget):
         self.set_auto_enabled(bool(self._config.get("review.auto_start", True)))
         # 从配置读取背景图（空表示默认白底）
         self.set_background(str(self._config.get("panel.background", "") or ""))
+        # 从配置读取是否房子样式（默认开启）
+        self.set_house_mode(bool(self._config.get("panel.house", True)))
 
         # 加载单词并显示
         self.refresh_words()
@@ -448,6 +592,16 @@ class FloatPanel(QWidget):
                 self.width() - grip.width() - 2,
                 self.height() - grip.height() - 2,
             )
+        # 房子样式下：文字区上边距跟随屋顶高度，保证文字始终在窗户内
+        if getattr(self, "_house_mode", False):
+            container = getattr(self, "_container", None)
+            if container is not None and container.layout() is not None:
+                m = container.layout().contentsMargins()
+                new_top = container.roof_height() + 2
+                if m.top() != new_top:
+                    container.layout().setContentsMargins(
+                        m.left(), new_top, m.right(), m.bottom()
+                    )
         super().resizeEvent(event)
         self.geometry_changed.emit()
 
@@ -488,6 +642,34 @@ class FloatPanel(QWidget):
             self._container.set_background(path)
         except Exception:
             pass  # 背景图加载失败不影响面板功能
+
+    def set_house_mode(self, enabled: bool) -> None:
+        """切换「房子样式」面板
+
+        - 开启：绘制粉色小屋（屋顶+窗户+草地），文字区向下让出屋顶高度，
+          面板太小时自动放大到合适尺寸
+        - 关闭：回到普通白底/背景图样式
+        """
+        enabled = bool(enabled)
+        self._house_mode = enabled
+        try:
+            self._container.set_house_mode(enabled)
+            layout = self._container.layout()
+            if layout is not None:
+                m = layout.contentsMargins()
+                if enabled:
+                    layout.setContentsMargins(14, self._container.roof_height() + 2, 14, 10)
+                    if self.height() < 170:
+                        self.resize(max(self.width(), 300), 170)
+                        self._save_geometry()
+                else:
+                    layout.setContentsMargins(14, 12, 14, 10)
+        except Exception:
+            pass  # 房子样式切换失败不影响面板功能
+
+    def house_enabled(self) -> bool:
+        """当前是否为房子样式"""
+        return getattr(self, "_house_mode", False)
 
     def toggle_pause(self) -> None:
         """切换手动暂停 / 继续"""

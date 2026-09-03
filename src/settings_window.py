@@ -33,6 +33,7 @@ class SettingsWindow(QDialog):
     interval_changed = Signal(int)    # 轮播间隔（秒）
     opacity_changed = Signal(float)   # 面板透明度
     background_changed = Signal(str)  # 面板背景图（相对路径，空字符串表示清除）
+    house_changed = Signal(bool)      # 房子样式面板开关
     # 确定/取消信号（供主程序在取消时回滚预览效果）
     applied = Signal()
     canceled = Signal()
@@ -122,6 +123,14 @@ class SettingsWindow(QDialog):
             "QCheckBox::indicator { width: 16px; height: 16px; }"
         )
         layout.addWidget(self._pet_check)
+
+        # 房子样式开关（粉色小屋面板）
+        self._house_check = QCheckBox("房子样式面板（粉色小屋）", self)
+        self._house_check.setStyleSheet(
+            "QCheckBox { font-size: 13px; color: #333333; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+        )
+        layout.addWidget(self._house_check)
 
         layout.addWidget(self._divider())
 
@@ -213,6 +222,7 @@ class SettingsWindow(QDialog):
         # 事件绑定
         self._interval_slider.valueChanged.connect(self._on_interval_changed)
         self._opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        self._house_check.toggled.connect(self.house_changed.emit)
         self._ok_btn.clicked.connect(self._on_ok)
         self._cancel_btn.clicked.connect(self._on_cancel)
 
@@ -339,6 +349,8 @@ class SettingsWindow(QDialog):
         self._auto_launch_check.setChecked(get_auto_launch_enabled())
         # 桌宠开关
         self._pet_check.setChecked(bool(self._config.get("panel.pet_enabled", True)))
+        # 房子样式开关
+        self._house_check.setChecked(bool(self._config.get("panel.house", True)))
         # 背景图（仅填充预览，不重新发出信号；面板已在启动时加载）
         self._pending_bg = str(self._config.get("panel.background", "") or "")
         self._update_preview(self._pending_bg)
@@ -363,6 +375,7 @@ class SettingsWindow(QDialog):
         )
         self._config.set("panel.background", self._pending_bg)
         self._config.set("panel.pet_enabled", self._pet_check.isChecked())
+        self._config.set("panel.house", self._house_check.isChecked())
         # 开机自启写入注册表
         enabled = self._auto_launch_check.isChecked()
         self._config.set("auto_launch", enabled)

@@ -233,6 +233,20 @@ def main():
     report("背景: 设置窗口清除信号", sw_bg._pending_bg == "")
     report("背景: 配置默认无背景", cfg.get("panel.background", "") == "")
 
+    # 房子样式面板
+    panel.set_house_mode(True)
+    report("房子: 开启后进入房子样式", panel._container.house_enabled())
+    report("房子: 屋顶高度大于0", panel._container.roof_height() > 0,
+           "roof_h={}".format(panel._container.roof_height()))
+    report("房子: 文字区上边距让出屋顶",
+           panel._container.layout().contentsMargins().top() >= panel._container.roof_height(),
+           "top={} roof={}".format(panel._container.layout().contentsMargins().top(),
+                                   panel._container.roof_height()))
+    panel.set_house_mode(False)
+    report("房子: 关闭后回到普通样式", not panel._container.house_enabled())
+    report("房子: 配置默认开启", cfg.get("panel.house", True) is True)
+    panel.set_house_mode(True)
+
     # ---- 8. 桌宠：角色加载 / 驻留面板内 / 多动作状态机(行走/跳跃/拖拽) / 日常话语气泡 / 配置 ----
     from src.desktop_pet import DesktopPet
     pet = DesktopPet(cfg, panel)

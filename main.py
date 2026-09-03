@@ -233,6 +233,7 @@ class MainApp:
             self._settings_window.interval_changed.connect(self.panel.set_interval)
             self._settings_window.opacity_changed.connect(self.panel.set_opacity)
             self._settings_window.background_changed.connect(self.panel.set_background)
+            self._settings_window.house_changed.connect(self.panel.set_house_mode)
             self._settings_window.applied.connect(self._on_settings_applied)
             # 取消时回滚实时预览到已保存配置
             self._settings_window.canceled.connect(self._rollback_settings)
@@ -248,6 +249,7 @@ class MainApp:
         self.panel.set_interval(int(self.config.get("review.interval", 10)))
         self.panel.set_opacity(float(self.config.get("panel.opacity", 0.85)))
         self.panel.set_background(str(self.config.get("panel.background", "") or ""))
+        self.panel.set_house_mode(bool(self.config.get("panel.house", True)))
         self._update_pet_visibility()
 
     def _on_settings_applied(self) -> None:
