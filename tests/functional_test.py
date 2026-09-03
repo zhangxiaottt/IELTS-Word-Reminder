@@ -292,6 +292,9 @@ def main():
     pet.mouseReleaseEvent(rel)
     report("桌宠: 点击弹出气泡", pet._bubble.isVisible(),
            "text={}".format(pet._bubble.text()))
+    report("桌宠: 气泡浮动开启", pet._bubble._bob_timer.isActive())
+    pet._bubble.hide()
+    report("桌宠: 气泡隐藏后浮动停止", not pet._bubble._bob_timer.isActive())
     report("桌宠: 气泡说出词义", "梨" in pet._bubble.text(),
            "text={}".format(pet._bubble.text()))
     pet._bubble.hide()

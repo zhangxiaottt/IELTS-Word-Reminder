@@ -66,6 +66,11 @@ class _SpeechBubble(QWidget):
         self._fade.setDuration(160)
         self._fade.setStartValue(0.0)
         self._fade.setEndValue(1.0)
+        # 飘浮动画：出现后像气球轻轻上下飘动
+        self._bob_timer = QTimer(self)
+        self._bob_timer.timeout.connect(self._bob_tick)
+        self._bob_phase = 0.0
+        self._base_y = 0
         self.hide()
 
     def text(self) -> str:
@@ -91,6 +96,26 @@ class _SpeechBubble(QWidget):
         """淡入动画（每次显示前调用）"""
         self._fade.stop()
         self._fade.start()
+
+    def float_in(self) -> None:
+        """淡入同时开始轻轻上下飘动（气球效果）"""
+        self._base_y = self.y()
+        self._bob_phase = 0.0
+        self._bob_timer.start(33)
+        self.fade_in()
+
+    def _bob_tick(self) -> None:
+        """每帧更新气泡位置：正弦上下浮动（幅度 5px）"""
+        self._bob_phase += 0.18
+        dy = round(math.sin(self._bob_phase) * 5)
+        self.move(self.x(), self._base_y + dy)
+
+    def hideEvent(self, event) -> None:
+        """隐藏时停止飘动并回到基准位置"""
+        self._bob_timer.stop()
+        if self._base_y:
+            self.move(self.x(), self._base_y)
+        super().hideEvent(event)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -441,7 +466,7 @@ class DesktopPet(QWidget):
         self._bubble.move(x, y)
         self._bubble.show()
         self._bubble.raise_()
-        self._bubble.fade_in()
+        self._bubble.float_in()
         QTimer.singleShot(1800, self._bubble.hide)
 
     def contextMenuEvent(self, event) -> None:
