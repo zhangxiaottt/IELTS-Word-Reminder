@@ -233,17 +233,21 @@ def main():
     report("背景: 设置窗口清除信号", sw_bg._pending_bg == "")
     report("背景: 配置默认无背景", cfg.get("panel.background", "") == "")
 
-    # ---- 8. 桌宠：角色加载 / 锚定 / 动画 / 配置开关 ----
+    # ---- 8. 桌宠：角色加载 / 驻留面板内 / 动画 / 拖拽自由模式 / 气泡 / 配置 ----
     from src.desktop_pet import DesktopPet
     pet = DesktopPet(cfg, panel)
     panel.show()
     pet.show()
     pet.anchor()
     report("桌宠: 角色图已加载", not pet._pixmap.isNull())
+    report("桌宠: 眨眼帧已加载", not pet._blink_pixmap.isNull())
     g = panel.geometry()
-    report("桌宠: 锚定在面板下缘",
-           pet.y() >= g.y() + g.height() and g.x() - 80 <= pet.x() <= g.x() + g.width(),
-           "pet=({},{}) panel=(y{} h{})".format(pet.x(), pet.y(), g.y(), g.height()))
+    # 驻留面板内部：宠物底边不超出面板底边，且水平居中于面板内
+    report("桌宠: 驻留面板内部",
+           pet.y() + pet.height() <= g.y() + g.height() + 1
+           and g.x() <= pet.x() and pet.x() + pet.width() <= g.x() + g.width() + 1,
+           "pet=({},{}) size={} panel=(x{} y{} w{} h{})".format(
+               pet.x(), pet.y(), pet.width(), g.x(), g.y(), g.width(), g.height()))
     # 动画 tick 能推进位置
     pet._t = 0
     pet._target_dx = 5
@@ -252,6 +256,34 @@ def main():
     after = (pet.x(), pet.y())
     report("桌宠: 动画驱动移动", after != before,
            "before={} after={}".format(before, after))
+    # 拖拽到任意位置 → 进入自由模式，锚点落在拖拽点
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+    # 注意：PySide6 的 QMouseEvent 会共享内部数据，必须每个事件用完再造下一个，否则 globalPosition() 会被后构造者覆盖
+    gp0 = pet.mapToGlobal(QPointF(10, 10))
+    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(10, 10), gp0,
+                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    pet.mousePressEvent(press)
+    gp1 = gp0 + QPointF(80, 60)
+    rel = QMouseEvent(QEvent.MouseButtonRelease, QPointF(90, 70), gp1,
+                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    pet.mouseReleaseEvent(rel)
+    report("桌宠: 拖拽后进入自由模式", pet._mode == "free"
+           and pet._base_pos == (pet.pos().x(), pet.pos().y()),
+           "mode={} base={} pos={}".format(pet._mode, pet._base_pos, (pet.pos().x(), pet.pos().y())))
+    # 点击（无位移）→ 冒气泡
+    gp0 = pet.mapToGlobal(QPointF(12, 12))
+    press = QMouseEvent(QEvent.MouseButtonPress, QPointF(12, 12), gp0,
+                        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    pet.mousePressEvent(press)
+    rel = QMouseEvent(QEvent.MouseButtonRelease, QPointF(12, 12), gp0,
+                      Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    pet.mouseReleaseEvent(rel)
+    report("桌宠: 点击弹出气泡", pet._bubble.isVisible(), "text={}".format(pet._bubble.text()))
+    pet._bubble.hide()
+    # 回到面板内
+    pet.dock_to_panel()
+    report("桌宠: 回到面板内", pet._mode == "dock")
     report("桌宠: 配置默认开启", cfg.get("panel.pet_enabled", True) is True)
     pet.hide()
 

@@ -8,13 +8,16 @@
 3. 其余像素设为不透明
 """
 import os
+import sys
 
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QImage, QPixmap, QColor
 from collections import deque
 
-SRC = r"D:\Projects\IELTS-Word-Reminder\assets\pets\pet_1_raw.jpg"
-DST = r"D:\Projects\IELTS-Word-Reminder\assets\pets\pet_1.png"
+# 默认输入/输出（可用命令行参数覆盖：python make_pet_png.py <输入> <输出>）
+BASE = r"D:\Projects\IELTS-Word-Reminder\assets\pets"
+SRC = BASE + r"\pet_1_raw.jpg"
+DST = BASE + r"\pet_1.png"
 
 # 粉色背景判定阈值（HSV：h 色相 0-359，s/v 0-255）
 H_MIN = 280      # 品红/粉/红 色相下界
@@ -82,12 +85,59 @@ def apply_alpha(img, bg):
     return img
 
 
+def keep_largest_component(img):
+    """只保留最大连通的不透明区域（去除抠底后残留的孤立噪点/色块）
+
+    抠掉与边缘连通的背景后，主体人物是最大的连通块；
+    背景中残留的白色噪点等会成为与人物不相连的孤立小岛，直接清除。
+    """
+    w, h = img.width(), img.height()
+    opaque = bytearray(w * h)
+    for y in range(h):
+        for x in range(w):
+            if QColor.fromRgba(img.pixel(x, y)).alpha() > 0:
+                opaque[y * w + x] = 1
+
+    seen = bytearray(w * h)
+    best = []
+    for y in range(h):
+        for x in range(w):
+            if opaque[y * w + x] and not seen[y * w + x]:
+                comp = []
+                dq = deque()
+                seen[y * w + x] = 1
+                dq.append((x, y))
+                while dq:
+                    cx, cy = dq.popleft()
+                    comp.append((cx, cy))
+                    for nx, ny in ((cx+1, cy), (cx-1, cy), (cx, cy+1), (cx, cy-1)):
+                        if (0 <= nx < w and 0 <= ny < h
+                                and opaque[ny * w + nx] and not seen[ny * w + nx]):
+                            seen[ny * w + nx] = 1
+                            dq.append((nx, ny))
+                if len(comp) > len(best):
+                    best = comp
+    # 把非最大分量的像素设为透明
+    best_set = set(best)
+    for (x, y) in best_set:
+        pass
+    for y in range(h):
+        for x in range(w):
+            if opaque[y * w + x] and (x, y) not in best_set:
+                c = QColor.fromRgba(img.pixel(x, y))
+                c.setAlpha(0)
+                img.setPixelColor(x, y, c)
+    return len(best)
+
+
 def main():
     img = load(SRC)
     bg = flood_from_border(img)
     # 统计去掉多少像素
     removed = sum(bg) * 1.0 / (img.width() * img.height()) * 100
     apply_alpha(img, bg)
+    # 只保留最大连通区域（清除背景残留噪点）
+    keep = keep_largest_component(img)
     # 保存前再把非背景像素设成不透明（去掉残留的半透明杂边）
     for y in range(img.height()):
         for x in range(img.width()):
@@ -98,8 +148,11 @@ def main():
     ok = img.save(DST, "PNG")
     if not ok:
         raise RuntimeError("save failed")
-    print("OK saved: {} (bg removed {:.1f}%)".format(DST, removed))
+    print("OK saved: {} (bg removed {:.1f}%, keep px {})".format(DST, removed, keep))
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 3:
+        SRC = sys.argv[1]
+        DST = sys.argv[2]
     main()

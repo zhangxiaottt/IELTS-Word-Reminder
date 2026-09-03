@@ -1,44 +1,64 @@
 # -*- coding: utf-8 -*-
 """桌面小宠模块 - DesktopPet
 
-在悬浮复习面板周围活动的小型 Q 版角色（桌宠）：
-- 透明、无边框、置顶小窗，显示透明背景的角色 PNG（平面/2D 设计）
-- 简单动画：上下轻微浮动 + 左右来回游走，活动范围限于面板周围
-- 面板移动/缩放时自动跟随重新定位
-- 单击跳跃反应；右键菜单可回到面板旁
+一只 Q 版双马尾少女（粉色系，与面板背景预设同角色）：
+- 默认驻留「悬浮面板内部」（底部居中），随面板移动/缩放自动跟随
+- 支持鼠标拖拽到屏幕任意位置，松开后在该处附近自由活动（自由模式）
+- 简单动画（全部平面/2D）：
+    * 上下轻微浮动 + 左右摇摆（正弦）
+    * 定时「点头」（绕底部中心轻微旋转）
+    * 定时「眨眼」（睁眼帧 ↔ 闭眼帧切换，多帧动画）
+    * 点击「跳跃」反应 + 弹出气泡说话
+- 右键菜单：回到面板内 / 隐藏小宠
+- 窗口按角色像素生成掩码：透明区域可穿透点击到下层面板，
+  驻留面板内时不会挡住按钮操作
 """
 import math
 import random
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QPainter, QRegion, QColor
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QLabel, QMenu, QVBoxLayout,
+    QApplication, QWidget, QLabel, QMenu,
 )
 
 from .utils import get_asset_path
 
-# 角色图路径（透明 PNG，位于 assets/pets/）
-PET_SPRITE = "pets/pet_1.png"
+# 角色帧路径（透明 PNG）
+SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
+SPRITE_BLINK = "pets/pet_1_blink.png"   # 闭眼（眨眼）帧
+
+# 点击时的气泡文案
+BUBBLE_TEXTS = [
+    "背单词啦！", "加油鸭~", "今天背了吗？", "嘿嘿，我在这儿~",
+    "复习时间到！", "学累了就歇会儿~", "你认真的样子真好看~",
+]
 
 
 class DesktopPet(QWidget):
     """桌面小宠"""
 
-    TICK_MS = 33          # 动画刷新间隔（毫秒）
-    DISPLAY_H = 120       # 角色显示高度（像素，高分屏自动按比例放大）
-    BOB_AMP = 6           # 上下浮动幅度（像素）
-    BOB_SPEED = 0.16      # 浮动角速度
-    WANDER_STEP = 1.2     # 每帧向目标游走的步长（像素）
-    HOP_POWER = 26        # 单击跳跃力度（像素）
-    WANDER_RANGE = 40     # 相对锚点的最大水平游走距离（像素）
+    TICK_MS = 33             # 动画刷新间隔（毫秒）
+    DISPLAY_H = 76           # 角色显示高度（像素，高分屏自动缩放）
+    BOB_AMP = 4              # 上下浮动幅度（像素）
+    BOB_SPEED = 0.14         # 浮动角速度
+    WANDER_STEP = 0.8        # 每帧游走步长（像素）
+    HOP_POWER = 26           # 点击跳跃初始高度（像素）
+    NOD_AMP = 8              # 点头最大角度（度）
+    NOD_TICKS = 20           # 一次点头持续帧数（约 660ms）
+    MASK_ALPHA = 40          # 掩码阈值：高于该透明度的像素才可交互
+    CLICK_MOVE = 5           # 超过该位移视为拖拽（否则视为点击）
+
+    # 不同模式下围绕锚点的活动范围（左/右/上/下 扩展像素）
+    DOCK_RANGE = (12, 12, 6, 10)
+    FREE_RANGE = (40, 40, 10, 40)
 
     def __init__(self, config, panel, parent: QWidget = None):
         """初始化桌宠
 
         Args:
             config: ConfigManager 实例
-            panel: FloatPanel 实例（桌宠跟随它移动）
+            panel: FloatPanel 实例（驻留模式下跟随它）
         """
         super().__init__(
             parent,
@@ -51,17 +71,50 @@ class DesktopPet(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)  # 不抢输入焦点
         self.setWindowTitle("雅思小宠")
 
-        # 加载角色图
-        self._pixmap = QPixmap(get_asset_path(PET_SPRITE))
-        self._build_ui()
+        # 帧图
+        self._open_pixmap = QPixmap(get_asset_path(SPRITE_OPEN))
+        self._blink_pixmap = QPixmap(get_asset_path(SPRITE_BLINK))
+        if self._blink_pixmap.isNull():
+            self._blink_pixmap = self._open_pixmap  # 无眨眼帧时退化为睁眼
+        self._pixmap = self._open_pixmap            # 当前显示帧
+        self.setFixedSize(self.DISPLAY_H, self.DISPLAY_H)
+        self._build_mask()
 
-        # 动画状态
-        self._t = 0              # 时间步计数
-        self._wander = 0.0       # 当前水平偏移（相对锚点）
-        self._target_dx = 0      # 目标水平偏移
-        self._hop = 0            # 跳跃高度（逐帧衰减）
-        self._base_pos = (0, 0)  # 锚点：面板下缘居中
+        # 动画 / 交互状态
+        self._mode = "dock"          # dock=驻留面板内 / free=自由活动
+        self._t = 0                  # 时间步
+        self._wander = 0.0           # 当前水平偏移
+        self._target_dx = 0          # 目标水平偏移
+        self._hop = 0                # 跳跃高度（逐帧衰减）
+        self._nod_angle = 0.0        # 点头当前角度
+        self._nod_progress = None    # 点头进度（None=未在点头）
+        self._base_pos = (0, 0)      # 锚点（左上角）
+        self._dragging = False       # 是否正在拖拽
+        self._drag_press_global = None
+        self._drag_offset = None
 
+        # 气泡
+        self._bubble = QLabel(
+            None,
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            | Qt.WindowTransparentForInput,
+        )
+        self._bubble.setAttribute(Qt.WA_TranslucentBackground)
+        self._bubble.setAttribute(Qt.WA_ShowWithoutActivating)
+        self._bubble.setAlignment(Qt.AlignCenter)
+        self._bubble.setStyleSheet(
+            "QLabel {"
+            "  background: #FFFFFF;"
+            "  border: 1px solid #4A90E2;"
+            "  border-radius: 10px;"
+            "  padding: 6px 12px;"
+            "  color: #333333;"
+            "  font-size: 13px;"
+            "}"
+        )
+        self._bubble.hide()
+
+        # 定时器
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(self.TICK_MS)
@@ -70,61 +123,89 @@ class DesktopPet(QWidget):
         self._wander_timer.timeout.connect(self._pick_target)
         self._wander_timer.start(random.randint(2500, 5000))
 
-    # ------------------------------------------------------------------ #
-    # UI
-    # ------------------------------------------------------------------ #
-    def _build_ui(self) -> None:
-        """构建界面：单张角色图"""
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self._label = QLabel(self)
-        if not self._pixmap.isNull():
-            w = int(self._pixmap.width() * self.DISPLAY_H / self._pixmap.height())
-            pm = self._pixmap.scaled(
-                w, self.DISPLAY_H, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self._label.setPixmap(pm)
-            self.setFixedSize(pm.width(), pm.height())
-        else:
-            self.setFixedSize(80, 80)
-        layout.addWidget(self._label)
+        self._nod_timer = QTimer(self)
+        self._nod_timer.timeout.connect(self._start_nod)
+        self._nod_timer.start(random.randint(3500, 5500))
+
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._do_blink)
+        self._blink_timer.start(random.randint(2200, 4200))
 
     # ------------------------------------------------------------------ #
-    # 定位 / 动画
+    # 掩码：透明区域可穿透点击
     # ------------------------------------------------------------------ #
-    def _screen(self):
-        """当前屏幕（回退到主屏）"""
-        s = self.screen()
-        return s if s else QApplication.primaryScreen()
+    def _build_mask(self) -> None:
+        """按当前显示帧的非透明像素生成窗口掩码
 
+        这样驻留在面板内时，只有角色实体能接收鼠标，透明处点击穿透到面板。
+        """
+        if self._pixmap.isNull():
+            self.clearMask()
+            return
+        pm = self._pixmap.scaled(
+            self.width(), self.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        img = pm.toImage()
+        w, h = img.width(), img.height()
+        region = QRegion()
+        for y in range(h):
+            x0 = -1
+            for x in range(w):
+                if QColor.fromRgba(img.pixel(x, y)).alpha() > self.MASK_ALPHA:
+                    if x0 < 0:
+                        x0 = x
+                else:
+                    if x0 >= 0:
+                        region = region.united(QRegion(x0, y, x - x0, 1))
+                        x0 = -1
+            if x0 >= 0:
+                region = region.united(QRegion(x0, y, w - x0, 1))
+        self.setMask(region)
+
+    # ------------------------------------------------------------------ #
+    # 锚定 / 模式
+    # ------------------------------------------------------------------ #
     def anchor(self) -> None:
-        """根据面板当前几何重新计算锚点（面板下缘居中）并归位"""
+        """跟随面板重算锚点（仅驻留模式生效；自由模式保持拖拽位置）"""
+        if self._mode != "dock":
+            return
         if not self._panel.isVisible():
             self.hide()
             return
         g = self._panel.geometry()
+        # 驻留在面板内部：底部居中，下缘留 6px 边距
         self._base_pos = (
             g.x() + (g.width() - self.width()) // 2,
-            g.y() + g.height() + 8,
+            g.y() + g.height() - self.height() - 6,
         )
         self._wander = 0.0
         self._target_dx = 0
         self._apply_position(force=True)
 
-    def _allowed_region(self) -> tuple:
-        """活动范围：面板四周扩展区域（左上角语义），并夹在屏幕可用区域内
+    def dock_to_panel(self) -> None:
+        """回到面板内（驻留模式）"""
+        self._mode = "dock"
+        self.anchor()
 
-        返回 (left, right, top, bottom)，表示桌宠左上角允许的坐标范围。
+    def _screen(self):
+        s = self.screen()
+        return s if s else QApplication.primaryScreen()
+
+    def _allowed_region(self) -> tuple:
+        """当前模式下锚点周围的活动范围，并夹在屏幕可用区域内
+
+        Returns: (left, right, top, bottom) —— 桌宠左上角允许坐标范围
         """
-        g = self._panel.geometry()
-        left = g.x() - 40
-        right = g.x() + g.width() + 40
-        top = g.y() - 40
-        bottom = g.y() + g.height() + 60
+        ax, ay = self._base_pos
+        if self._mode == "dock":
+            dl, dr, dt, db = self.DOCK_RANGE
+        else:
+            dl, dr, dt, db = self.FREE_RANGE
+        left, right = ax - dl, ax + dr
+        top, bottom = ay - dt, ay + db
         scr = self._screen()
         if scr is not None:
             ag = scr.availableGeometry()
-            # 屏幕边界按桌宠尺寸夹紧，保证整只小宠可见
             left = max(left, ag.x())
             right = min(right, ag.x() + ag.width() - self.width())
             top = max(top, ag.y())
@@ -139,19 +220,47 @@ class DesktopPet(QWidget):
         """随机选取下一个游走目标（水平偏移相对锚点）"""
         ax, _ = self._base_pos
         left, right, _, _ = self._allowed_region()
-        self._target_dx = random.randint(
-            max(left - ax, -self.WANDER_RANGE),
-            min(right - ax, self.WANDER_RANGE),
-        )
+        self._target_dx = random.randint(left - ax, right - ax)
         self._wander_timer.start(random.randint(2500, 5000))
 
-    def _tick(self) -> None:
-        """动画主循环：浮动 + 游走 + 跳跃衰减"""
-        self._t += 1
-        if not self.isVisible() or not self._panel.isVisible():
+    # ------------------------------------------------------------------ #
+    # 动画
+    # ------------------------------------------------------------------ #
+    def _start_nod(self) -> None:
+        """启动一次点头（绕底部中心俯仰再回正）"""
+        if self.isVisible():
+            self._nod_progress = 0
+            self._nod_timer.start(random.randint(3500, 5500))
+
+    def _do_blink(self) -> None:
+        """切换到闭眼帧，140ms 后恢复睁眼"""
+        if not self.isVisible():
             return
-        # 上下浮动（正弦）
-        bob = int(math.sin(self._t * self.BOB_SPEED) * self.BOB_AMP)
+        self._pixmap = self._blink_pixmap
+        self.update()
+        QTimer.singleShot(140, self._end_blink)
+        self._blink_timer.start(random.randint(2200, 4200))
+
+    def _end_blink(self) -> None:
+        """恢复睁眼帧"""
+        self._pixmap = self._open_pixmap
+        self.update()
+
+    def _tick(self) -> None:
+        """动画主循环：浮动 + 游走 + 点头 + 跳跃"""
+        self._t += 1
+        if not self.isVisible() or not self._panel.isVisible() or self._dragging:
+            return
+        # 点头角度
+        if self._nod_progress is not None:
+            self._nod_progress += 1
+            p = self._nod_progress / float(self.NOD_TICKS)
+            self._nod_angle = math.sin(math.pi * min(p, 1.0)) * self.NOD_AMP
+            if p >= 1.0:
+                self._nod_angle = 0.0
+                self._nod_progress = None
+        else:
+            self._nod_angle = 0.0
         # 左右游走：逐步逼近目标偏移
         dx = self._wander
         if abs(self._target_dx - dx) <= self.WANDER_STEP:
@@ -164,6 +273,7 @@ class DesktopPet(QWidget):
             if self._hop < 0:
                 self._hop = 0
         self._apply_position()
+        self.update()
 
     def _apply_position(self, force: bool = False) -> None:
         """根据锚点 + 偏移计算并设置位置（夹在活动范围内）"""
@@ -177,29 +287,97 @@ class DesktopPet(QWidget):
         if force or self.pos().x() != x or self.pos().y() != y:
             self.move(x, y)
 
+    def paintEvent(self, event) -> None:
+        """绘制当前帧（带点头旋转）"""
+        if self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        if abs(self._nod_angle) > 0.1:
+            painter.save()
+            painter.translate(self.width() / 2.0, self.height())
+            painter.rotate(self._nod_angle)
+            painter.translate(-self.width() / 2.0, -self.height())
+            painter.drawPixmap(0, 0, self.width(), self.height(), self._pixmap)
+            painter.restore()
+        else:
+            painter.drawPixmap(0, 0, self.width(), self.height(), self._pixmap)
+        painter.end()
+
     # ------------------------------------------------------------------ #
-    # 交互
+    # 交互：点击（跳跃+气泡）/ 拖拽（拖到哪就在哪活动）
     # ------------------------------------------------------------------ #
     def mousePressEvent(self, event) -> None:
-        """左键单击：跳跃反应"""
         if event.button() == Qt.LeftButton:
-            self._hop = self.HOP_POWER
+            self._dragging = True
+            self._drag_press_global = event.globalPosition().toPoint()
+            self._drag_offset = self._drag_press_global - self.pos()
             event.accept()
             return
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging and self._drag_offset is not None:
+            # 跟随鼠标移动
+            new_pos = event.globalPosition().toPoint() - self._drag_offset
+            scr = self._screen()
+            if scr is not None:
+                ag = scr.availableGeometry()
+                new_pos.setX(max(ag.x(), min(ag.x() + ag.width() - self.width(), new_pos.x())))
+                new_pos.setY(max(ag.y(), min(ag.y() + ag.height() - self.height(), new_pos.y())))
+            self.move(new_pos)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            moved = (event.globalPosition().toPoint() - self._drag_press_global).manhattanLength()
+            if moved > self.CLICK_MOVE:
+                # 拖拽落点：进入自由模式，在落点附近活动
+                self._mode = "free"
+                self._base_pos = (self.pos().x(), self.pos().y())
+                self._wander = 0.0
+                self._target_dx = 0
+            else:
+                # 点击：跳跃 + 冒气泡
+                self._hop = self.HOP_POWER
+                self.show_bubble()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def show_bubble(self, text: str = None) -> None:
+        """在宠物上方弹出气泡（1.8 秒后自动消失）"""
+        text = text or random.choice(BUBBLE_TEXTS)
+        self._bubble.setText(text)
+        self._bubble.adjustSize()
+        x = self.x() + (self.width() - self._bubble.width()) // 2
+        y = self.y() - self._bubble.height() - 4
+        self._bubble.move(max(0, x), max(0, y))
+        self._bubble.show()
+        self._bubble.raise_()
+        QTimer.singleShot(1800, self._bubble.hide)
+
     def contextMenuEvent(self, event) -> None:
-        """右键菜单：回到面板旁 / 隐藏"""
+        """右键菜单：回到面板内 / 隐藏小宠"""
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu { background: #FFFFFF; border: 1px solid #E0E0E0; }"
             "QMenu::item { padding: 6px 22px; color: #333333; }"
             "QMenu::item:selected { background: #EAF3FC; color: #4A90E2; }"
         )
-        act_back = menu.addAction("回到面板旁")
+        act_back = menu.addAction("回到面板内")
         act_hide = menu.addAction("隐藏小宠")
         chosen = menu.exec(event.globalPos())
         if chosen == act_back:
-            self.anchor()
+            self.dock_to_panel()
         elif chosen == act_hide:
             self.hide()
+            self._bubble.hide()
+
+    def hideEvent(self, event) -> None:
+        """隐藏时一并隐藏气泡"""
+        self._bubble.hide()
+        super().hideEvent(event)
