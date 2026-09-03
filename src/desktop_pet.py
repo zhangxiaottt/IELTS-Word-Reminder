@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QMenu,
 )
 
-from .utils import get_asset_path
+from .utils import get_asset_path, condense_meaning
 
 # 角色帧路径（透明 PNG）
 SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
@@ -39,19 +39,19 @@ class DesktopPet(QWidget):
     """桌面小宠"""
 
     TICK_MS = 33             # 动画刷新间隔（毫秒）
-    DISPLAY_H = 76           # 角色显示高度（像素，高分屏自动缩放）
-    BOB_AMP = 4              # 上下浮动幅度（像素）
+    DISPLAY_H = 228          # 角色显示高度（像素，约面板高度的 3 倍，高分屏自动缩放）
+    BOB_AMP = 5              # 上下浮动幅度（像素）
     BOB_SPEED = 0.14         # 浮动角速度
-    WANDER_STEP = 0.8        # 每帧游走步长（像素）
-    HOP_POWER = 26           # 点击跳跃初始高度（像素）
+    WANDER_STEP = 1.2        # 每帧游走步长（像素）
+    HOP_POWER = 40           # 点击跳跃初始高度（像素）
     NOD_AMP = 8              # 点头最大角度（度）
     NOD_TICKS = 20           # 一次点头持续帧数（约 660ms）
     MASK_ALPHA = 40          # 掩码阈值：高于该透明度的像素才可交互
     CLICK_MOVE = 5           # 超过该位移视为拖拽（否则视为点击）
 
     # 不同模式下围绕锚点的活动范围（左/右/上/下 扩展像素）
-    DOCK_RANGE = (12, 12, 6, 10)
-    FREE_RANGE = (40, 40, 10, 40)
+    DOCK_RANGE = (30, 30, 20, 70)
+    FREE_RANGE = (90, 90, 40, 90)
 
     def __init__(self, config, panel, parent: QWidget = None):
         """初始化桌宠
@@ -102,14 +102,16 @@ class DesktopPet(QWidget):
         self._bubble.setAttribute(Qt.WA_TranslucentBackground)
         self._bubble.setAttribute(Qt.WA_ShowWithoutActivating)
         self._bubble.setAlignment(Qt.AlignCenter)
+        self._bubble.setWordWrap(True)
+        self._bubble.setMaximumWidth(300)
         self._bubble.setStyleSheet(
             "QLabel {"
             "  background: #FFFFFF;"
             "  border: 1px solid #4A90E2;"
-            "  border-radius: 10px;"
-            "  padding: 6px 12px;"
+            "  border-radius: 12px;"
+            "  padding: 8px 14px;"
             "  color: #333333;"
-            "  font-size: 13px;"
+            "  font-size: 15px;"
             "}"
         )
         self._bubble.hide()
@@ -173,10 +175,10 @@ class DesktopPet(QWidget):
             self.hide()
             return
         g = self._panel.geometry()
-        # 驻留在面板内部：底部居中，下缘留 6px 边距
+        # 驻留：站在面板正下方（水平居中、紧贴面板下缘），随面板移动/缩放
         self._base_pos = (
             g.x() + (g.width() - self.width()) // 2,
-            g.y() + g.height() - self.height() - 6,
+            g.y() + g.height() + 6,
         )
         self._wander = 0.0
         self._target_dx = 0
@@ -349,13 +351,35 @@ class DesktopPet(QWidget):
         super().mouseReleaseEvent(event)
 
     def show_bubble(self, text: str = None) -> None:
-        """在宠物上方弹出气泡（1.8 秒后自动消失）"""
-        text = text or random.choice(BUBBLE_TEXTS)
+        """在宠物上方弹出气泡（1.8 秒后自动消失）
+
+        默认显示「当前单词的词义」（如：apple：n. 苹果）；
+        词库为空时显示随机鼓励语。
+        """
+        if text is None:
+            row = self._panel.current_word_row()
+            if row and (row.get("word") or row.get("meaning")):
+                word = row.get("word") or ""
+                meaning = condense_meaning(row.get("meaning") or "")
+                text = "{}：{}".format(word, meaning) if meaning else word
+            else:
+                text = random.choice(BUBBLE_TEXTS)
         self._bubble.setText(text)
         self._bubble.adjustSize()
+        # 气泡显示在宠物上方居中，避免超出屏幕
+        scr = self._screen()
+        if scr is not None:
+            ag = scr.availableGeometry()
+        else:
+            ag = None
         x = self.x() + (self.width() - self._bubble.width()) // 2
-        y = self.y() - self._bubble.height() - 4
-        self._bubble.move(max(0, x), max(0, y))
+        y = self.y() - self._bubble.height() - 6
+        if ag is not None:
+            x = max(ag.x() + 4, min(ag.x() + ag.width() - self._bubble.width() - 4, x))
+            if y < ag.y() + 4:
+                # 上方放不下时放到宠物下方
+                y = self.y() + self.height() + 6
+        self._bubble.move(x, y)
         self._bubble.show()
         self._bubble.raise_()
         QTimer.singleShot(1800, self._bubble.hide)

@@ -568,6 +568,15 @@ class FloatPanel(QWidget):
         )
         self._example_label.setFullText(example)
 
+    def current_word_row(self) -> dict:
+        """返回当前展示中的单词行（dict）；列表为空时返回 None
+
+        供桌宠等外部组件读取当前单词，用于「气泡说词义」等功能。
+        """
+        if 0 <= self._index < len(self._words):
+            return self._words[self._index]
+        return None
+
     def _show_empty(self) -> None:
         """单词列表为空时的占位展示"""
         self._word_label.hide()

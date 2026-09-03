@@ -241,11 +241,13 @@ def main():
     pet.anchor()
     report("桌宠: 角色图已加载", not pet._pixmap.isNull())
     report("桌宠: 眨眼帧已加载", not pet._blink_pixmap.isNull())
+    report("桌宠: 尺寸放大 3 倍", pet.width() == 228 and pet.height() == 228,
+           "size={}x{}".format(pet.width(), pet.height()))
     g = panel.geometry()
-    # 驻留面板内部：宠物底边不超出面板底边，且水平居中于面板内
-    report("桌宠: 驻留面板内部",
-           pet.y() + pet.height() <= g.y() + g.height() + 1
-           and g.x() <= pet.x() and pet.x() + pet.width() <= g.x() + g.width() + 1,
+    # 驻留在面板正下方（贴住下缘、水平居中）
+    report("桌宠: 驻留在面板下方",
+           pet.y() >= g.y() + g.height() and
+           abs((pet.x() + pet.width() // 2) - (g.x() + g.width() // 2)) <= 3,
            "pet=({},{}) size={} panel=(x{} y{} w{} h{})".format(
                pet.x(), pet.y(), pet.width(), g.x(), g.y(), g.width(), g.height()))
     # 动画 tick 能推进位置
@@ -271,7 +273,16 @@ def main():
     report("桌宠: 拖拽后进入自由模式", pet._mode == "free"
            and pet._base_pos == (pet.pos().x(), pet.pos().y()),
            "mode={} base={} pos={}".format(pet._mode, pet._base_pos, (pet.pos().x(), pet.pos().y())))
-    # 点击（无位移）→ 冒气泡
+    # 回到面板内（拖走后再归位，便于后续点击测试）
+    pet.dock_to_panel()
+    report("桌宠: 回到面板内", pet._mode == "dock")
+    # 准备当前单词 → 点击气泡应说出词义
+    wm.add_word("pear", "/pɛər/", "n. 梨；梨树", "A juicy pear.")
+    panel.refresh_words()
+    pear_row = next((r for r in panel._words if r.get("word") == "pear"), None)
+    if pear_row:
+        panel._index = panel._words.index(pear_row)
+        panel._show_word(pear_row)
     gp0 = pet.mapToGlobal(QPointF(12, 12))
     press = QMouseEvent(QEvent.MouseButtonPress, QPointF(12, 12), gp0,
                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
@@ -279,11 +290,11 @@ def main():
     rel = QMouseEvent(QEvent.MouseButtonRelease, QPointF(12, 12), gp0,
                       Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
     pet.mouseReleaseEvent(rel)
-    report("桌宠: 点击弹出气泡", pet._bubble.isVisible(), "text={}".format(pet._bubble.text()))
+    report("桌宠: 点击弹出气泡", pet._bubble.isVisible(),
+           "text={}".format(pet._bubble.text()))
+    report("桌宠: 气泡说出词义", "梨" in pet._bubble.text(),
+           "text={}".format(pet._bubble.text()))
     pet._bubble.hide()
-    # 回到面板内
-    pet.dock_to_panel()
-    report("桌宠: 回到面板内", pet._mode == "dock")
     report("桌宠: 配置默认开启", cfg.get("panel.pet_enabled", True) is True)
     pet.hide()
 
