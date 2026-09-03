@@ -281,6 +281,14 @@ def main():
            "state={}".format(pet._state))
     report("桌宠: 行走朝向朝右", pet._face == 1,
            "face={}".format(pet._face))
+    report("桌宠: 行走显示迈步帧", pet._pixmap in pet._walk_pixmaps,
+           "frame_in_walk={}".format(pet._pixmap in pet._walk_pixmaps))
+    # 走路帧循环推进（每帧应切换不同迈步姿态）
+    _f0 = pet._pixmap
+    pet._advance_walk()
+    _f1 = pet._pixmap
+    report("桌宠: 走路帧循环切换", _f1 is not _f0,
+           "frame_switched={}".format(_f1 is not _f0))
     pet._target_dx = -40
     for _ in range(5):
         pet._tick()
@@ -289,6 +297,8 @@ def main():
     pet._target_dx = 0
     for _ in range(5):
         pet._tick()
+    report("桌宠: 停止行走恢复睁眼帧", pet._pixmap not in pet._walk_pixmaps,
+           "back_to_base={}".format(pet._pixmap not in pet._walk_pixmaps))
     # 拖拽到任意位置 → 进入自由模式，锚点落在拖拽点
     from PySide6.QtCore import QPointF, QEvent
     from PySide6.QtGui import QMouseEvent

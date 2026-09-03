@@ -35,6 +35,8 @@ from .utils import get_asset_path
 # 角色帧路径（透明 PNG）
 SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
 SPRITE_BLINK = "pets/pet_1_blink.png"   # 闭眼（眨眼）帧
+# 走路帧序列（同角色不同迈步姿态，已按脚底/中心/体型对齐）
+SPRITE_WALK = ("pets/walk_1.png", "pets/walk_2.png", "pets/walk_3.png")
 
 # 日常话语（按时段问好 + 催促背单词 + 可爱闲聊）
 MORNING_TEXTS = [
@@ -249,7 +251,9 @@ class DesktopPet(QWidget):
     BREATH_SPEED = 0.30
     BREATH_AMP = 0.035
     # 行走：方向翻转 + 高频颠簸
-    WALK_BOB_AMP = 4
+    WALK_FRAME_MS = 150      # 每帧间隔（毫秒）
+    WALK_CYCLE = (0, 1, 2, 1)  # 4 拍循环：右步→换步→左步→换步
+    WALK_BOB_AMP = 2
     WALK_BOB_SPEED = 0.42
     WANDER_STEP = 1.2
     # 跳跃：抛物线 + 挤压/拉伸
@@ -283,6 +287,14 @@ class DesktopPet(QWidget):
         self._blink_pixmap = QPixmap(get_asset_path(SPRITE_BLINK))
         if self._blink_pixmap.isNull():
             self._blink_pixmap = self._open_pixmap
+        self._walk_pixmaps = []
+        for _p in SPRITE_WALK:
+            _pm = QPixmap(get_asset_path(_p))
+            if not _pm.isNull():
+                self._walk_pixmaps.append(_pm)
+        if not self._walk_pixmaps:
+            self._walk_pixmaps = [self._open_pixmap]
+        self._walk_idx = 0
         self._pixmap = self._open_pixmap
         self.setFixedSize(self.DISPLAY_H, self.DISPLAY_H)
         self._build_mask()
@@ -322,6 +334,11 @@ class DesktopPet(QWidget):
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._do_blink)
         self._blink_timer.start(random.randint(2200, 4200))
+
+        # 走路帧循环定时器（走路时切换迈步帧）
+        self._walk_timer = QTimer(self)
+        self._walk_timer.timeout.connect(self._advance_walk)
+        self._walk_timer.setInterval(self.WALK_FRAME_MS)
 
         self._stretch_timer = QTimer(self)
         self._stretch_timer.timeout.connect(self._start_stretch)
@@ -417,7 +434,7 @@ class DesktopPet(QWidget):
     # 动画：状态机
     # ------------------------------------------------------------------ #
     def _do_blink(self) -> None:
-        if not self.isVisible():
+        if not self.isVisible() or self._state == "walk":
             return
         self._pixmap = self._blink_pixmap
         self.update()
@@ -428,6 +445,29 @@ class DesktopPet(QWidget):
         self._pixmap = self._open_pixmap
         self.update()
 
+    def _advance_walk(self) -> None:
+        """走路帧循环：按 4 拍切换迈步帧；离开走路状态则停止"""
+        if self._state != "walk":
+            self._walk_timer.stop()
+            return
+        self._walk_idx = (self._walk_idx + 1) % len(self.WALK_CYCLE)
+        frame = self._walk_pixmaps[
+            self.WALK_CYCLE[self._walk_idx] % len(self._walk_pixmaps)
+        ]
+        if frame is not self._pixmap:
+            # 不同迈步姿态帧底形不同，重建掩码避免被剪辑
+            self._pixmap = frame
+            self._build_mask()
+            self.update()
+
+    def _reset_to_base_frame(self) -> None:
+        """离开走路状态时切回睁眼基准帧（同时恢复掩码）"""
+        if (self._pixmap is not self._open_pixmap
+                and self._pixmap is not self._blink_pixmap):
+            self._pixmap = self._open_pixmap
+            self._build_mask()
+            self.update()
+
     def _start_stretch(self) -> None:
         """偶尔伸个懒腰（小幅纵向拉长，随即恢复）"""
         if self.isVisible() and self._state == "idle":
@@ -436,6 +476,8 @@ class DesktopPet(QWidget):
 
     def _start_jump(self) -> None:
         """点击触发跳跃"""
+        self._walk_timer.stop()
+        self._reset_to_base_frame()
         self._state = "jump"
         self._jump_phase = 0.0
 
@@ -483,6 +525,22 @@ class DesktopPet(QWidget):
                 self._state = "walk"
                 # 朝向：按移动方向翻转
                 self._face = 1 if self._target_dx >= self._wander else -1
+
+        # 走路帧管理：走路时启动迈步循环，否则恢复睁眼帧
+        if self._state == "walk":
+            if not self._walk_timer.isActive():
+                self._walk_timer.start()
+                # 进入走路立即切到第一帧迈步（不等定时器首次触发，反应更快）
+                self._walk_idx = 0
+                self._pixmap = self._walk_pixmaps[
+                    self.WALK_CYCLE[0] % len(self._walk_pixmaps)
+                ]
+                self._build_mask()
+                self.update()
+        else:
+            if self._walk_timer.isActive():
+                self._walk_timer.stop()
+            self._reset_to_base_frame()
 
         self._apply_position()
         self._update_shadow()
@@ -581,6 +639,8 @@ class DesktopPet(QWidget):
     # ------------------------------------------------------------------ #
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
+            self._walk_timer.stop()
+            self._reset_to_base_frame()
             self._dragging = True
             self._state = "drag"
             self._drag_press_global = event.globalPosition().toPoint()
