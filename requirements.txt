@@ -1,0 +1,6 @@
+# 雅思单词悬浮记忆工具 - 依赖清单（稳定版本）
+# 使用 Python 3.10 + PySide6 构建桌面 GUI
+# 注：requests 固定为 2.28.2，与系统已装的 openxlab 依赖（requests~=2.28.2）兼容
+PySide6==6.7.3
+keyboard==0.13.5
+requests==2.28.2
