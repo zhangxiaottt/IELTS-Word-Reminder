@@ -233,7 +233,7 @@ def main():
     report("背景: 设置窗口清除信号", sw_bg._pending_bg == "")
     report("背景: 配置默认无背景", cfg.get("panel.background", "") == "")
 
-    # ---- 8. 桌宠：角色加载 / 驻留面板内 / 动画 / 拖拽自由模式 / 气泡 / 配置 ----
+    # ---- 8. 桌宠：角色加载 / 驻留面板内 / 多动作状态机(行走/跳跃/拖拽) / 日常话语气泡 / 配置 ----
     from src.desktop_pet import DesktopPet
     pet = DesktopPet(cfg, panel)
     panel.show()
@@ -258,6 +258,23 @@ def main():
     after = (pet.x(), pet.y())
     report("桌宠: 动画驱动移动", after != before,
            "before={} after={}".format(before, after))
+    # 行走状态：目标较远时进入 walk，并按移动方向翻转朝向
+    pet._target_dx = 40
+    pet._state = "idle"
+    for _ in range(5):
+        pet._tick()
+    report("桌宠: 远处目标进入行走状态", pet._state == "walk",
+           "state={}".format(pet._state))
+    report("桌宠: 行走朝向朝右", pet._face == 1,
+           "face={}".format(pet._face))
+    pet._target_dx = -40
+    for _ in range(5):
+        pet._tick()
+    report("桌宠: 反向行走朝左", pet._face == -1,
+           "face={}".format(pet._face))
+    pet._target_dx = 0
+    for _ in range(5):
+        pet._tick()
     # 拖拽到任意位置 → 进入自由模式，锚点落在拖拽点
     from PySide6.QtCore import QPointF, QEvent
     from PySide6.QtGui import QMouseEvent
@@ -276,13 +293,7 @@ def main():
     # 回到面板内（拖走后再归位，便于后续点击测试）
     pet.dock_to_panel()
     report("桌宠: 回到面板内", pet._mode == "dock")
-    # 准备当前单词 → 点击气泡应说出词义
-    wm.add_word("pear", "/pɛər/", "n. 梨；梨树", "A juicy pear.")
-    panel.refresh_words()
-    pear_row = next((r for r in panel._words if r.get("word") == "pear"), None)
-    if pear_row:
-        panel._index = panel._words.index(pear_row)
-        panel._show_word(pear_row)
+    # 单击 → 进入跳跃状态（含挤压/拉伸 + 地面阴影反应），同时弹出日常话语气泡
     gp0 = pet.mapToGlobal(QPointF(12, 12))
     press = QMouseEvent(QEvent.MouseButtonPress, QPointF(12, 12), gp0,
                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
@@ -290,16 +301,35 @@ def main():
     rel = QMouseEvent(QEvent.MouseButtonRelease, QPointF(12, 12), gp0,
                       Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
     pet.mouseReleaseEvent(rel)
-    report("桌宠: 点击弹出气泡", pet._bubble.isVisible(),
-           "text={}".format(pet._bubble.text()))
+    report("桌宠: 单击进入跳跃", pet._state == "jump",
+           "state={}".format(pet._state))
+    for _ in range(10):
+        pet._tick()
+    report("桌宠: 跳跃时地面阴影缩小", pet._shadow._scale < 1.0,
+           "scale={}".format(pet._shadow._scale))
+    report("桌宠: 点击弹出气泡", pet._bubble.isVisible()
+           and len(pet._bubble.text()) > 0, "text={}".format(pet._bubble.text()))
     report("桌宠: 气泡浮动开启", pet._bubble._bob_timer.isActive())
     pet._bubble.hide()
     report("桌宠: 气泡隐藏后浮动停止", not pet._bubble._bob_timer.isActive())
-    report("桌宠: 气泡说出词义", "梨" in pet._bubble.text(),
+    from src.desktop_pet import (MORNING_TEXTS, NOON_TEXTS, EVENING_TEXTS,
+                                 NIGHT_TEXTS, REMIND_TEXTS)
+    _all_phrases = set(MORNING_TEXTS + NOON_TEXTS + EVENING_TEXTS + NIGHT_TEXTS + REMIND_TEXTS)
+    report("桌宠: 气泡说日常话语(非词义)", pet._bubble.text() in _all_phrases,
            "text={}".format(pet._bubble.text()))
+    # 跳跃动画完整走完 → 回到待机，落地挤压衰减归零
+    pet._jump_phase = 0.0
+    pet._state = "jump"
+    for _ in range(pet.JUMP_TICKS + 20):
+        pet._tick()
+    report("桌宠: 跳跃完成后回到待机", pet._state in ("idle", "walk"),
+           "state={}".format(pet._state))
+    report("桌宠: 落地挤压衰减归零", pet._land_squash <= 0,
+           "land={}".format(pet._land_squash))
     pet._bubble.hide()
     report("桌宠: 配置默认开启", cfg.get("panel.pet_enabled", True) is True)
     pet.hide()
+
 
     print("=" * 50)
     print("功能测试：通过 {} 项，失败 {} 项".format(PASS, FAIL))

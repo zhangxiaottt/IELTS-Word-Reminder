@@ -32,3 +32,5 @@ dist/
 
 # 桌宠源图（带底色，仅本地再处理用）
 assets/pets/*_raw.*
+
+tests/frames/
