@@ -359,6 +359,7 @@ class FloatPanel(QWidget):
     open_settings = Signal()         # 请求打开设置窗口
     open_library = Signal()          # 请求打开单词库管理窗口
     open_test_mode = Signal()        # 请求打开测试模式窗口
+    open_article = Signal()          # 请求打开每日复习文章窗口
     request_quit = Signal()          # 请求退出程序
     geometry_changed = Signal()      # 面板位置/大小变化（供桌宠跟随）
 
@@ -913,6 +914,7 @@ class FloatPanel(QWidget):
         act_next = menu.addAction("下一个单词")
         menu.addSeparator()
         act_test = menu.addAction("测试模式")
+        act_article = menu.addAction("每日复习文章")
         act_input = menu.addAction("录入单词")
         act_library = menu.addAction("单词库管理")
         act_settings = menu.addAction("设置")
@@ -933,6 +935,8 @@ class FloatPanel(QWidget):
             self.next_word()
         elif chosen == act_test:
             self.open_test_mode.emit()
+        elif chosen == act_article:
+            self.open_article.emit()
         elif chosen == act_input:
             self.open_input.emit()
         elif chosen == act_library:

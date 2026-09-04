@@ -25,6 +25,17 @@ def get_db_path() -> str:
     return os.path.join(BASE_DIR, "data", "word_lib.db")
 
 
+def get_data_dir() -> str:
+    """返回数据目录 data（单词库、每日文章等），不存在则创建"""
+    path = os.path.join(BASE_DIR, "data")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+    return path
+
+
+
 def get_asset_path(name: str) -> str:
     """返回 assets 目录下指定资源文件的绝对路径"""
     return os.path.join(BASE_DIR, "assets", name)

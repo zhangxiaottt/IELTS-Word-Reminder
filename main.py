@@ -40,6 +40,7 @@ from src.input_widget import InputWidget  # noqa: E402
 from src.settings_window import SettingsWindow  # noqa: E402
 from src.word_library_window import WordLibraryWindow  # noqa: E402
 from src.test_mode_window import TestModeWindow  # noqa: E402
+from src.review_article_window import ReviewArticleWindow  # noqa: E402
 from src.desktop_pet import DesktopPet  # noqa: E402
 
 # 统一主题色
@@ -105,6 +106,7 @@ class MainApp:
         self._settings_window = None
         self._library_window = None
         self._test_window = None
+        self._article_window = None
 
         # ---- 组装 ----
         self._build_tray()
@@ -146,6 +148,7 @@ class MainApp:
         act_input = menu.addAction("录入单词")
         act_library = menu.addAction("单词库管理")
         act_test = menu.addAction("测试模式")
+        act_article = menu.addAction("每日复习文章")
         act_settings = menu.addAction("设置")
         menu.addSeparator()
         act_quit = menu.addAction("退出程序")
@@ -153,6 +156,7 @@ class MainApp:
         act_input.triggered.connect(self.open_input_widget)
         act_library.triggered.connect(self.open_library_window)
         act_test.triggered.connect(self.open_test_mode)
+        act_article.triggered.connect(self.open_review_article)
         act_settings.triggered.connect(self.open_settings_window)
         act_quit.triggered.connect(self.quit_app)
 
@@ -179,6 +183,7 @@ class MainApp:
         self.panel.open_settings.connect(self.open_settings_window)
         self.panel.open_library.connect(self.open_library_window)
         self.panel.open_test_mode.connect(self.open_test_mode)
+        self.panel.open_article.connect(self.open_review_article)
         self.panel.request_quit.connect(self.quit_app)
 
     # ------------------------------------------------------------------ #
@@ -297,6 +302,23 @@ class MainApp:
                 self.panel.set_paused(False)
         except Exception:
             pass  # 恢复失败不影响程序
+
+    def open_review_article(self) -> None:
+        """打开每日复习文章窗口（单实例，普通独立页面）"""
+        try:
+            if self._article_window is None:
+                self._article_window = ReviewArticleWindow(self.wm)
+                self._article_window.closed.connect(
+                    lambda: setattr(self, "_article_window", None)
+                )
+                self._article_window.destroyed.connect(
+                    lambda: setattr(self, "_article_window", None)
+                )
+            self._article_window.show()
+            self._article_window.raise_()
+            self._article_window.activateWindow()
+        except Exception:
+            pass  # 文章窗口打开失败不影响程序
 
     # ------------------------------------------------------------------ #
     # 资源 / 退出

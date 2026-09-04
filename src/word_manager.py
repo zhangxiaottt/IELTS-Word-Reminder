@@ -360,6 +360,25 @@ class WordManager:
         except sqlite3.Error:
             return []
 
+    def get_recent_words(self, days: int = 3, limit: int = 12) -> list:
+        """最近 N 天录入的单词（用于每日复习文章编词）
+
+        Args:
+            days: 回溯天数（含今天）
+            limit: 最多返回条数
+        Returns:
+            list[dict]: 单词列表（含 id/word/phonetic/meaning/example）
+        """
+        try:
+            sql = (
+                "SELECT * FROM words WHERE date(created_at) >= "
+                "date('now','localtime','-{} days') ORDER BY id DESC LIMIT ?"
+            ).format(int(days))
+            rows = self._conn.execute(sql, (int(limit),)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.Error:
+            return []
+
     def count_all(self) -> int:
         """统计单词总数"""
         try:
