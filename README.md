@@ -116,6 +116,23 @@ python main.py
 - 文中近期单词蓝色高亮，右侧词汇表（单词+音标+释义）点击可跳回正文对应位置
 - 「复制全文」一键复制纯文本到剪贴板
 
+#### AI 生成文章（可选，大模型写作风更自然）
+
+默认使用本地模板生成；在「设置 → AI 生成文章」里填入一家大模型即可改为 AI 写文章：
+
+| 厂商 | 接口地址（base_url） | 模型名 | 备注 |
+| --- | --- | --- | --- |
+| DeepSeek | `https://api.deepseek.com` | `deepseek-chat` | 便宜、英文质量好，推荐 |
+| 豆包（火山方舟） | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seed-2-1-turbo`（或方舟控制台的接入点 ID） | 新客每模型 50 万 tokens 免费 |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-turbo` | 新客 100 万 tokens（90 天） |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.7-flash` | 永久免费（有并发限制） |
+
+- 设置窗口已内置上述厂商预设，选中自动填好地址和模型名，只填 API Key 即可
+- 「测试连接」按钮可先验证 Key 是否可用
+- 所有厂商都是 OpenAI 兼容接口，一套代码、换三个字段（base_url / model / api_key）即切换
+- **未配置 Key / 网络失败时自动回落本地模板**，离线也能正常出文章
+- API Key 仅保存在本地 `config/config.json`，不会上传
+
 ### 复习算法
 
 复习列表严格按优先级生成：
@@ -130,4 +147,6 @@ python main.py
 ```bash
 python tests/smoke_test.py      # 冒烟测试：配置 / 数据库 / 词典API / 界面类
 python tests/functional_test.py # 功能测试：录入 → 展示 → 轮播 → 标记 → 设置
+python tests/article_test.py    # 每日复习文章：生成 / 归档 / 窗口
+python tests/llm_test.py        # 大模型接入：LLMClient / 设置区 / 模板塕底
 ```

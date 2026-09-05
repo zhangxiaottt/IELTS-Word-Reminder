@@ -34,10 +34,20 @@ class ReviewArticleWindow(QMainWindow):
     closed = Signal()  # 关闭信号（主程序据此释放单例引用）
 
     def __init__(self, word_manager, parent: QWidget = None,
-                 data_file: str = None):
+                 data_file: str = None, config=None):
         super().__init__(parent)
         self._wm = word_manager
-        self._gen = ArticleGenerator(word_manager, data_file=data_file)
+        # 可选大模型客户端：由 config 构建（OpenAI 兼容、厂商无关）。
+        # 配置并启用时用 AI 写文章；未配置 / 失败时自动回落本地模板。
+        llm = None
+        if config is not None:
+            try:
+                from src.llm_client import LLMClient
+                llm = LLMClient(config)
+            except Exception:
+                llm = None
+        self._gen = ArticleGenerator(word_manager, data_file=data_file,
+                                     llm_client=llm)
         self._current = None          # 当前展示的文章 dict
         self._cur_date = datetime.now().strftime("%Y-%m-%d")
 

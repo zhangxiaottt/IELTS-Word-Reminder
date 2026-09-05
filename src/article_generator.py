@@ -193,11 +193,15 @@ class ArticleGenerator:
     - 归档：按日期读写 data/articles.json，支持换一篇与回看历史
     """
 
-    def __init__(self, word_manager, data_file: str = None):
+    def __init__(self, word_manager, data_file: str = None,
+                 llm_client=None):
         self._wm = word_manager
         # 默认写到 data/articles.json；测试可传入临时文件避免污染真实数据
         self._file = data_file or os.path.join(get_data_dir(), "articles.json")
         self._store = self._load_store()
+        # 可选：大模型客户端（OpenAI 兼容）。配置并启用时用 AI 写文章，
+        # 未配置 / 调用失败时自动回落本地模板，保证始终能出文章。
+        self._llm = llm_client
 
     # ------------------------------------------------------------------ #
     # 归档（data/articles.json，按日期索引）
@@ -256,11 +260,20 @@ class ArticleGenerator:
         """
         if date_str is None:
             date_str = datetime.now().strftime("%Y-%m-%d")
+        # 先取词（AI 与模板两条路都要用）
+        words = self.get_target_words(days=days, limit=limit)
+
+        # AI 路径：配置了 LLM 且调用成功则用 AI 写文章；失败自动回落模板
+        if self._llm is not None and self._llm.enabled():
+            art = self._generate_with_llm(date_str, words)
+            if art is not None:
+                return art
+
+        # 模板兜底路径（离线 / 未配置 key / AI 失败时使用）
         # 以日期为默认种子：同一天多次打开内容一致；传 seed 则换一篇
         rng = random.Random(seed if seed is not None else date_str)
         theme = rng.choice(THEMES)
 
-        words = self.get_target_words(days=days, limit=limit)
         # 按词性分组并打乱，保证每次选的词更随机
         buckets = {"n": [], "v": [], "adj": [], "adv": [], "any": []}
         for row in words:
@@ -320,6 +333,115 @@ class ArticleGenerator:
                 paras.append("".join(cur).strip())
                 cur = []
         return paras
+
+    # ------------------------------------------------------------------ #
+    # AI 生成路径
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _llm_messages(words: list) -> list:
+        """构造让大模型写复习文章的对话消息"""
+        word_list = "\n".join(
+            "- {w}  [{p}]  {m}".format(
+                w=w.get("word", ""), p=w.get("phonetic", "") or "",
+                m=w.get("meaning", "") or "")
+            for w in words
+        )
+        system = (
+            "You are an English writing assistant for an IELTS vocabulary "
+            "review app. Write ONE short, coherent, natural English story "
+            "(150-220 words, 2-4 short paragraphs) that uses as many of the "
+            "given words as possible, each in a grammatically correct way. "
+            "Keep the language simple and clear for an intermediate learner. "
+            "Respond ONLY with JSON (no markdown fences), with exactly three "
+            'keys: "title" (a short title), "text" (the story, paragraphs '
+            'separated by a blank line), "used_words" (array of the exact '
+            "given words you used, in order of first appearance)."
+        )
+        user = (
+            "Here are the words to use (word | phonetic | meaning):\n"
+            + word_list + "\n\nNow write the story."
+        )
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    def _generate_with_llm(self, date_str: str, words: list):
+        """用大模型生成文章；成功返回文章 dict，失败返回 None（走模板兜底）"""
+        try:
+            content = self._llm.complete(self._llm_messages(words))
+        except Exception:
+            content = None
+        if not content:
+            return None
+        parsed = self._parse_llm_article(content)
+        if not parsed:
+            return None
+        # 用到的词以“正文中出现”为准（即便模型漏了 used_words 也能补齐词表）
+        used = self._match_words_in_text(parsed["text"], words)
+        return {
+            "date": date_str,
+            "title": parsed["title"],
+            "text": parsed["text"],
+            "words": [
+                {"word": w["word"], "phonetic": w.get("phonetic", ""),
+                 "meaning": w.get("meaning", "")}
+                for w in used
+            ],
+            "target_count": len(words),
+            "used_count": len(used),
+        }
+
+    @staticmethod
+    def _parse_llm_article(content: str):
+        """宽松解析模型返回的 JSON（容忍 markdown 围栏 / 多余文字）"""
+        try:
+            data = json.loads(content)
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", content)
+            if not m:
+                return None
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                return None
+        if not isinstance(data, dict):
+            return None
+        title = str(data.get("title", "")).strip()
+        text = str(data.get("text", "")).strip()
+        if not title or not text:
+            return None
+        return {"title": title, "text": text}
+
+    @staticmethod
+    def _match_words_in_text(text: str, words: list) -> list:
+        """找出正文中实际出现的目标词（支持常见词形变化）
+
+        策略：把正文按单词切分成 token（小写），一个词命中当且仅当
+        - token 与词完全相等，或
+        - token 以词开头且剩余部分是常见词缀（ed/ing/s/ly/er/est 等）
+        这样模型写成 abandoned / swiftly / buses 时，词表仍能挂回库里的原词。
+        """
+        tokens = re.findall(r"[a-z]+", text.lower())
+        # 常见英文词形变化后缀（用于判断 token 是否为原词的变形）
+        inflections = {
+            "s", "es", "ed", "d", "ing", "ies", "ly", "er", "est", "ied",
+            "en", "erly",
+        }
+        used = []
+        for w in words:
+            word = str(w.get("word", "")).strip()
+            wl = word.lower()
+            if not wl:
+                continue
+            if wl in tokens:
+                used.append(w)
+            elif len(wl) >= 3 and any(
+                t.startswith(wl) and t[len(wl):] in inflections
+                for t in tokens
+            ):
+                used.append(w)
+        return used
 
     # ------------------------------------------------------------------ #
     # 对外便捷接口

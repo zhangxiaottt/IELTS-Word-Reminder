@@ -307,7 +307,8 @@ class MainApp:
         """打开每日复习文章窗口（单实例，普通独立页面）"""
         try:
             if self._article_window is None:
-                self._article_window = ReviewArticleWindow(self.wm)
+                self._article_window = ReviewArticleWindow(self.wm,
+                                                           config=self.config)
                 self._article_window.closed.connect(
                     lambda: setattr(self, "_article_window", None)
                 )

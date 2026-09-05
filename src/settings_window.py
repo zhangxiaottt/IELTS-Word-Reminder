@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """设置窗口模块 - SettingsWindow
 
-普通模态窗口，居中显示。
+普通模态窗口，居中显示（内容放在滚动区内，小屏幕也可完整显示）。
 设置项：
 - 轮播间隔：滑块 7-20 秒，实时生效
 - 面板透明度：滑块 0.5-1.0，实时预览
 - 面板背景：内置预设 / 选择本地图片 / 清除背景（静态图）
 - 开机自启：开关按钮（写入 Windows 注册表）
+- AI 生成文章：厂商预设 / 接口地址 / 模型名 / API Key / 启用开关 / 测试连接
 确定保存配置并立即生效；取消恢复原值。
 """
 import os
@@ -16,7 +17,7 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
     QPushButton, QCheckBox, QFrame, QMessageBox, QWidget,
-    QFileDialog, QScrollArea,
+    QFileDialog, QScrollArea, QLineEdit, QComboBox,
 )
 
 from .utils import (
@@ -42,6 +43,18 @@ class SettingsWindow(QDialog):
     COLOR_TEXT = "#333333"
     COLOR_GRAY = "#999999"
 
+    # AI 厂商预设（OpenAI 兼容，切换只需改 base_url + model 两项）
+    LLM_PRESETS = [
+        ("自定义", "", ""),
+        ("DeepSeek", "https://api.deepseek.com", "deepseek-chat"),
+        ("豆包（火山方舟）",
+         "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-turbo"),
+        ("通义千问",
+         "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-turbo"),
+        ("智谱 GLM",
+         "https://open.bigmodel.cn/api/paas/v4", "glm-4.7-flash"),
+    ]
+
     def __init__(self, config, parent: QWidget = None):
         """初始化设置窗口
 
@@ -64,7 +77,19 @@ class SettingsWindow(QDialog):
     # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
         """构建设置界面"""
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # 设置项较多，全部放进滚动区，小屏幕也能完整显示
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+        container = QWidget()
+        layout = QVBoxLayout(container)
         layout.setContentsMargins(20, 20, 20, 16)
         layout.setSpacing(14)
 
@@ -108,7 +133,7 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(self._divider())
 
-        # 3. 开机自启（开关按钮）
+        # 3. 开关类
         self._auto_launch_check = QCheckBox("开机自启", self)
         self._auto_launch_check.setStyleSheet(
             "QCheckBox { font-size: 13px; color: #333333; }"
@@ -207,7 +232,78 @@ class SettingsWindow(QDialog):
 
         layout.addWidget(self._divider())
 
-        # 5. 底部按钮
+        # 5. AI 生成（每日复习文章用大模型写）
+        ai_title = QLabel("AI 生成文章（每日复习）")
+        ai_title.setStyleSheet(
+            "font-size: 13px; font-weight: bold; color: {};".format(self.COLOR_TEXT)
+        )
+        layout.addWidget(ai_title)
+
+        # 厂商预设（选中后自动填地址和模型名）
+        preset_row = QHBoxLayout()
+        preset_lbl = QLabel("厂商预设")
+        preset_lbl.setStyleSheet("color: #666666; font-size: 12px;")
+        self._llm_preset = QComboBox()
+        for name, _, _ in self.LLM_PRESETS:
+            self._llm_preset.addItem(name)
+        self._llm_preset.setStyleSheet(
+            "QComboBox { border: 1px solid #CCCCCC; border-radius: 6px;"
+            "  padding: 4px 8px; background: #FFFFFF; }"
+        )
+        self._llm_preset.currentIndexChanged.connect(self._on_llm_preset)
+        preset_row.addWidget(preset_lbl)
+        preset_row.addWidget(self._llm_preset, 1)
+        layout.addLayout(preset_row)
+
+        # 接口地址
+        self._llm_url = QLineEdit()
+        self._llm_url.setPlaceholderText(
+            "接口地址（OpenAI 兼容，如 https://api.deepseek.com）"
+        )
+        self._llm_url.setStyleSheet(self._line_edit_style())
+        layout.addWidget(self._llm_url)
+
+        # 模型名
+        self._llm_model = QLineEdit()
+        self._llm_model.setPlaceholderText("模型名（如 deepseek-chat）")
+        self._llm_model.setStyleSheet(self._line_edit_style())
+        layout.addWidget(self._llm_model)
+
+        # API Key（密码显示）
+        self._llm_key = QLineEdit()
+        self._llm_key.setEchoMode(QLineEdit.Password)
+        self._llm_key.setPlaceholderText(
+            "API Key（仅保存在本地 config.json）"
+        )
+        self._llm_key.setStyleSheet(self._line_edit_style())
+        layout.addWidget(self._llm_key)
+
+        # 启用开关
+        self._llm_check = QCheckBox(
+            "启用 AI 生成（未配置或失败时自动回落本地模板）", self
+        )
+        self._llm_check.setStyleSheet(
+            "QCheckBox { font-size: 12px; color: #333333; }"
+            "QCheckBox::indicator { width: 16px; height: 16px; }"
+        )
+        layout.addWidget(self._llm_check)
+
+        # 测试连接
+        test_row = QHBoxLayout()
+        self._llm_test_btn = QPushButton("测试连接")
+        self._llm_test_btn.setCursor(Qt.PointingHandCursor)
+        self._llm_test_btn.setStyleSheet(self._small_btn_style())
+        self._llm_test_btn.clicked.connect(self._on_llm_test)
+        self._llm_test_label = QLabel("")
+        self._llm_test_label.setStyleSheet("color: #999999; font-size: 12px;")
+        self._llm_test_label.setWordWrap(True)
+        test_row.addWidget(self._llm_test_btn)
+        test_row.addWidget(self._llm_test_label, 1)
+        layout.addLayout(test_row)
+
+        layout.addWidget(self._divider())
+
+        # 6. 底部按钮
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
         self._ok_btn = QPushButton("确定", self)
@@ -225,6 +321,52 @@ class SettingsWindow(QDialog):
         self._house_check.toggled.connect(self.house_changed.emit)
         self._ok_btn.clicked.connect(self._on_ok)
         self._cancel_btn.clicked.connect(self._on_cancel)
+
+        scroll.setWidget(container)
+        outer.addWidget(scroll)
+
+    @staticmethod
+    def _line_edit_style() -> str:
+        """输入框统一样式"""
+        return (
+            "QLineEdit { border: 1px solid #CCCCCC; border-radius: 6px;"
+            "  padding: 6px 8px; background: #FFFFFF; color: #333333; }"
+            "QLineEdit:focus { border-color: #4A90E2; }"
+        )
+
+    def _on_llm_preset(self, index: int) -> None:
+        """选中厂商预设：自动填入接口地址和模型名"""
+        if index <= 0:
+            return
+        _, url, model = self.LLM_PRESETS[index]
+        if url:
+            self._llm_url.setText(url)
+        if model:
+            self._llm_model.setText(model)
+
+    def _on_llm_test(self) -> None:
+        """测试连接：用当前输入框的值发一条极简消息"""
+        self._llm_test_btn.setEnabled(False)
+        self._llm_test_label.setText("正在测试...")
+        self._llm_test_label.setStyleSheet("color: #999999; font-size: 12px;")
+        try:
+            from src.llm_client import LLMClient
+            client = LLMClient(self._config)
+            ok, msg = client.test_connection(
+                base_url=self._llm_url.text().strip(),
+                api_key=self._llm_key.text().strip(),
+                model=self._llm_model.text().strip(),
+            )
+            self._llm_test_label.setText(msg)
+            self._llm_test_label.setStyleSheet(
+                "color: #3BA55D; font-size: 12px;" if ok
+                else "color: #D9534F; font-size: 12px;"
+            )
+        except Exception as e:
+            self._llm_test_label.setText("测试异常：{}".format(e))
+            self._llm_test_label.setStyleSheet("color: #D9534F; font-size: 12px;")
+        finally:
+            self._llm_test_btn.setEnabled(True)
 
     def _divider(self) -> QFrame:
         """返回一条浅色分隔线"""
@@ -252,7 +394,7 @@ class SettingsWindow(QDialog):
 
     @staticmethod
     def _small_btn_style() -> str:
-        """选择图片/清除背景等次级按钮样式"""
+        """选择图片/清除背景/测试连接等次级按钮样式"""
         return (
             "QPushButton {"
             "  background: #FFFFFF;"
@@ -354,6 +496,14 @@ class SettingsWindow(QDialog):
         # 背景图（仅填充预览，不重新发出信号；面板已在启动时加载）
         self._pending_bg = str(self._config.get("panel.background", "") or "")
         self._update_preview(self._pending_bg)
+        # AI 生成设置（预设不触发填充，保留用户自定义值）
+        self._llm_preset.blockSignals(True)
+        self._llm_preset.setCurrentIndex(0)
+        self._llm_preset.blockSignals(False)
+        self._llm_check.setChecked(bool(self._config.get("llm.enabled", False)))
+        self._llm_url.setText(str(self._config.get("llm.base_url", "") or ""))
+        self._llm_key.setText(str(self._config.get("llm.api_key", "") or ""))
+        self._llm_model.setText(str(self._config.get("llm.model", "") or ""))
 
     def _on_interval_changed(self, value: int) -> None:
         """轮播间隔滑块：更新数值标签并实时生效"""
@@ -376,6 +526,11 @@ class SettingsWindow(QDialog):
         self._config.set("panel.background", self._pending_bg)
         self._config.set("panel.pet_enabled", self._pet_check.isChecked())
         self._config.set("panel.house", self._house_check.isChecked())
+        # 保存 AI 生成设置
+        self._config.set("llm.enabled", self._llm_check.isChecked())
+        self._config.set("llm.base_url", self._llm_url.text().strip())
+        self._config.set("llm.api_key", self._llm_key.text().strip())
+        self._config.set("llm.model", self._llm_model.text().strip())
         # 开机自启写入注册表
         enabled = self._auto_launch_check.isChecked()
         self._config.set("auto_launch", enabled)
