@@ -124,7 +124,12 @@ class LLMClient:
             resp.raise_for_status()
             data = resp.json()
             text = data["choices"][0]["message"]["content"]
-            return True, "连接成功，模型回复：" + (str(text)[:20])
+            if not isinstance(text, str) or not text.strip():
+                # 能连上但模型无返回：多半是模型名填错（如 DeepSeek 应填
+                # deepseek-chat，"V4-Flash" 只是对外宣传名不是 API 模型 ID）
+                return False, ("连接成功但模型无返回，请检查模型名"
+                               "（DeepSeek 请填 deepseek-chat）")
+            return True, "连接成功，模型回复：" + (text.strip()[:20])
         except Exception as e:
             return False, "连接失败：" + str(e)
 

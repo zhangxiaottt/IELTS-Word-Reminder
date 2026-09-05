@@ -306,6 +306,8 @@ class ArticleGenerator:
             ],
             "target_count": len(words),
             "used_count": len(used),
+            # 来源标记：模板生成。配了 AI 后旧模板文章会被升级成 AI 版
+            "source": "template",
         }
 
     @staticmethod
@@ -390,6 +392,8 @@ class ArticleGenerator:
             ],
             "target_count": len(words),
             "used_count": len(used),
+            # 来源标记：AI 生成（与模板区分，用于缓存刷新判断）
+            "source": "llm",
         }
 
     @staticmethod
@@ -448,13 +452,27 @@ class ArticleGenerator:
     # ------------------------------------------------------------------ #
     def get_or_generate(self, date_str: str = None, seed=None,
                         days: int = 3, limit: int = 12) -> dict:
-        """读取某天文章；没有则生成并存档（换一篇时传新 seed 覆盖）"""
+        """读取某天文章；没有则生成并存档（换一篇时传新 seed 覆盖）
+
+        缓存刷新规则：若当天存档是「模板版」，而现在已启用 AI，
+        则自动用 AI 重生成并覆盖（让配了 AI 后文章立即升级成 AI 版）；
+        已是 AI 版或未启用 AI 时直接返回存档，保证同一天内容稳定。
+        """
         if date_str is None:
             date_str = datetime.now().strftime("%Y-%m-%d")
         art = self.load(date_str)
         if art is None:
             art = self.generate(date_str=date_str, seed=seed, days=days, limit=limit)
             self.save(date_str, art)
+            return art
+        # 已有存档且之前是模板版、现在启用了 AI -> 用 AI 重生成升级
+        llm_on = self._llm is not None and self._llm.enabled()
+        if llm_on and art.get("source") != "llm":
+            fresh = self.generate(date_str=date_str, seed=seed, days=days, limit=limit)
+            # 只有真的生成了 AI 版才覆盖存档（AI 失败回落模板时不覆盖，保留原档）
+            if fresh.get("source") == "llm":
+                self.save(date_str, fresh)
+                return fresh
         return art
 
     @staticmethod

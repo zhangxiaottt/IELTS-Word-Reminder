@@ -211,6 +211,33 @@ def main():
     art_off = gen_off.generate(date_str="2026-09-04")
     report("未启用LLM走模板", fake_disabled.calls == 0 and art_off is not None)
 
+    # ---- 缓存刷新：模板存档在启用 AI 后被自动升级 ----
+    class ToggleLLM:
+        """可开关的假 LLM：先关后开，验证模板->AI 升级"""
+
+        def __init__(self, payload):
+            self._payload = payload
+            self.on = False
+
+        def enabled(self):
+            return self.on
+
+        def complete(self, messages):
+            return self._payload
+
+    t = ToggleLLM(story)
+    gen_up = ArticleGenerator(wm, data_file=os.path.join(tmp, "up.json"),
+                              llm_client=t)
+    art0 = gen_up.get_or_generate("2026-09-03")   # AI 未开 -> 模板版
+    report("AI关闭时生成模板版", art0.get("source") == "template")
+    t.on = True
+    art1 = gen_up.get_or_generate("2026-09-03")   # AI 已开 -> 升级为 AI 版
+    report("启用AI后模板文章升级", art1.get("source") == "llm"
+           and art1["title"] == "A Day in the Park")
+    report("升级后覆盖存档", gen_up.load("2026-09-03").get("source") == "llm")
+    art2 = gen_up.get_or_generate("2026-09-03")   # 已是AI版 -> 不再重生成
+    report("已是AI版不再重生成", art2["title"] == "A Day in the Park")
+
     # ---- 设置窗口 AI 区 ----
     app = QApplication.instance() or QApplication([])
     from src.settings_window import SettingsWindow
