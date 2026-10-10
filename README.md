@@ -3,41 +3,91 @@
 一款常驻系统托盘的雅思单词记忆悬浮工具：悬浮面板自动轮播单词，支持一键录入、
 认识/不认识标记、词库管理与导入导出，帮助利用碎片时间高效背单词。
 
-- 技术栈：Python 3.10 + PySide6 + SQLite
+- 界面层：Python 3.10 + PySide6 + SQLite
+- 服务层：Java 11（后端承载配置 / 词库 / 复习算法 / 词典 / AI 文章）
+- 桥接：Python 界面通过本地 HTTP（127.0.0.1:21001）调用 Java 服务
 - 词典数据：有道免费词典 API（在线查询音标 / 释义 / 例句）
+
+## 混合架构说明
+
+本项目采用「哪个语言效果好就用哪个」的混合架构：
+
+```
+┌─────────────────────────────── Python 界面层 ───────────────────────────────┐
+│  main.py 托盘/快捷键 · FloatPanel 悬浮面板 · DesktopPet 桌宠                 │
+│  InputWidget 录入 · SettingsWindow 设置 · WordLibraryWindow 词库             │
+│  TestModeWindow 测试 · ReviewArticleWindow 每日文章                         │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │  src/api_client.py（HTTP 桥接）
+                                ▼
+┌─────────────────────────────── Java 服务层（java-server） ──────────────────┐
+│  ConfigManager 配置 · WordManager 词库/复习算法 · DictAPI 有道词典            │
+│  LLMClient 大模型 · ArticleGenerator 每日文章 · LocalServer REST(21001)      │
+└──────────────────────────────────────────────────────────────────────────────┘
+                config/config.json 与 data/word_lib.db 双端共享（SQLite WAL）
+```
+
+- 桌宠动画、悬浮面板等重度依赖 Qt 的界面留在 Python（效果最好）
+- 配置、数据库、复习算法、词典请求、大模型请求等后端逻辑移到 Java 服务层
+- `main.py` 启动时自动拉起 Java 服务子进程并做健康检查；Java 不可用时
+  Python 端自动回退到本地实现（纯 Python 模式），程序不会崩溃
 
 ## 目录结构
 
 ```
 IELTS-Word-Reminder/
-├── main.py                    # 程序入口（托盘 / 快捷键 / 启动悬浮面板）
-├── requirements.txt           # 依赖清单（稳定版本）
+├── main.py                    # 程序入口（托盘 / 快捷键 / 拉起 Java 服务）
+├── requirements.txt           # Python 依赖清单（稳定版本）
 ├── config/                    # 配置文件 config.json（自动生成）
-├── data/                      # 单词库 word_lib.db（自动生成）
+├── data/                      # 单词库 word_lib.db / 文章归档 articles.json
 ├── assets/                    # 图标等资源（icon.png 自动生成，可自行替换）
-├── src/                       # 功能模块
+├── src/                       # Python 界面层功能模块
+│   ├── api_client.py          #   ApiClient Java 服务 HTTP 客户端（新增）
 │   ├── config.py              #   ConfigManager 配置管理
-│   ├── dict_api.py            #   DictAPI 有道词典 API（单例）
-│   ├── word_manager.py        #   WordManager 单词数据管理
+│   ├── dict_api.py            #   DictAPI 有道词典 API（单例，兜底用）
+│   ├── word_manager.py        #   WordManager 单词数据管理（兜底用）
 │   ├── float_panel.py         #   FloatPanel 复习悬浮面板
 │   ├── input_widget.py        #   InputWidget 单词录入窗口
 │   ├── settings_window.py     #   SettingsWindow 设置窗口
 │   ├── word_library_window.py #   WordLibraryWindow 单词库管理窗口
 │   └── utils.py               #   路径 / 开机自启 / 任务栏隐藏等工具
-└── tests/                     # 自动化测试（冒烟 + 功能）
+├── java-server/               # Java 服务层（Java 11，JDK 内置 HttpServer）
+│   ├── build.bat              #   编译全部 Java 代码到 out/
+│   ├── run.bat                #   单独启动 Java 服务（默认端口 21001）
+│   ├── test.bat               #   编译并运行全部 JUnit 测试
+│   ├── lib/                   #   sqlite-jdbc / gson / slf4j / junit 依赖
+│   ├── out/                   #   编译输出
+│   └── src/main/java/com/ielts/reminder/
+│       ├── config/            #   ProjectPaths / ConfigManager
+│       ├── data/              #   WordManager（JDBC + 复习算法）
+│       ├── api/               #   DictAPI / LLMClient
+│       ├── article/           #   ArticleGenerator（模板 + AI 双路）
+│       └── server/            #   LocalServer REST / Main 入口
+└── tests/                     # Python 自动化测试（冒烟 + 功能）
 ```
 
 ## 安装与运行
 
 ```bash
-# 1. 安装依赖（建议 Python 3.10）
+# 1. 安装 Python 依赖（建议 Python 3.10）
 pip install -r requirements.txt
 
-# 2. 启动程序
+# 2. 构建 Java 服务层（需要 JDK 11+；已构建可跳过）
+cd java-server && build.bat && cd ..
+
+# 3. 启动程序（会自动拉起 Java 服务；Java 不可用则纯 Python 模式）
 python main.py
 ```
 
 程序启动后最小化到系统托盘（无任务栏图标），悬浮复习面板出现在屏幕左上角附近。
+
+也可单独调试 Java 服务：
+
+```bash
+java-server\run.bat            # 启动服务（端口 21001）
+curl http://127.0.0.1:21001/api/health   # 健康检查
+java-server\test.bat           # 运行全部 JUnit 测试（33 例）
+```
 
 ## 使用说明
 

@@ -55,14 +55,16 @@ class SettingsWindow(QDialog):
          "https://open.bigmodel.cn/api/paas/v4", "glm-4.7-flash"),
     ]
 
-    def __init__(self, config, parent: QWidget = None):
+    def __init__(self, config, parent: QWidget = None, api_client=None):
         """初始化设置窗口
 
         Args:
             config: ConfigManager 实例
+            api_client: Java 服务层客户端（可选；用于同步配置与测试连接）
         """
         super().__init__(parent)
         self._config = config
+        self._api_client = api_client  # 混合架构：Java 服务层客户端
         self._pending_bg = ""  # 当前选中的背景图（相对路径，空=默认）
         self.setWindowTitle("设置")
         self.setModal(True)
@@ -345,18 +347,25 @@ class SettingsWindow(QDialog):
             self._llm_model.setText(model)
 
     def _on_llm_test(self) -> None:
-        """测试连接：用当前输入框的值发一条极简消息"""
+        """测试连接：优先走 Java 服务层，失败回落本地实现"""
         self._llm_test_btn.setEnabled(False)
         self._llm_test_label.setText("正在测试...")
         self._llm_test_label.setStyleSheet("color: #999999; font-size: 12px;")
         try:
-            from src.llm_client import LLMClient
-            client = LLMClient(self._config)
-            ok, msg = client.test_connection(
-                base_url=self._llm_url.text().strip(),
-                api_key=self._llm_key.text().strip(),
-                model=self._llm_model.text().strip(),
-            )
+            url = self._llm_url.text().strip()
+            key = self._llm_key.text().strip()
+            model = self._llm_model.text().strip()
+            ok, msg = False, "测试失败"
+            if self._api_client is not None:
+                # 优先调用 Java 服务层（LLM 请求封装在 Java 端）
+                ok, msg = self._api_client.test_llm(url, key, model)
+            if not ok and msg.startswith("Java 服务不可用"):
+                # Java 不可用时回落本地 LLMClient
+                from src.llm_client import LLMClient
+                client = LLMClient(self._config)
+                ok, msg = client.test_connection(
+                    base_url=url, api_key=key, model=model,
+                )
             self._llm_test_label.setText(msg)
             self._llm_test_label.setStyleSheet(
                 "color: #3BA55D; font-size: 12px;" if ok
@@ -516,24 +525,42 @@ class SettingsWindow(QDialog):
         self._opacity_value.setText("{}%".format(value))
         self.opacity_changed.emit(opacity)
 
+    def _sync_to_java(self, key: str, value) -> None:
+        """把配置项同步到 Java 服务层（失败静默，Python 文件仍是权威）"""
+        try:
+            if self._api_client is not None:
+                self._api_client.config_set(key, value)
+        except Exception:
+            pass
+
     def _on_ok(self) -> None:
         """确定：保存配置、设置开机自启、发出 applied 信号"""
-        # 写入配置
+        # 写入配置（同时同步到 Java 服务层，保证文章 AI 生成读取到最新配置）
         self._config.set("review.interval", self._interval_slider.value())
+        self._sync_to_java("review.interval", self._interval_slider.value())
         self._config.set(
             "panel.opacity", self._opacity_slider.value() / 100.0
         )
+        self._sync_to_java("panel.opacity", self._opacity_slider.value() / 100.0)
         self._config.set("panel.background", self._pending_bg)
+        self._sync_to_java("panel.background", self._pending_bg)
         self._config.set("panel.pet_enabled", self._pet_check.isChecked())
+        self._sync_to_java("panel.pet_enabled", self._pet_check.isChecked())
         self._config.set("panel.house", self._house_check.isChecked())
+        self._sync_to_java("panel.house", self._house_check.isChecked())
         # 保存 AI 生成设置
         self._config.set("llm.enabled", self._llm_check.isChecked())
+        self._sync_to_java("llm.enabled", self._llm_check.isChecked())
         self._config.set("llm.base_url", self._llm_url.text().strip())
+        self._sync_to_java("llm.base_url", self._llm_url.text().strip())
         self._config.set("llm.api_key", self._llm_key.text().strip())
+        self._sync_to_java("llm.api_key", self._llm_key.text().strip())
         self._config.set("llm.model", self._llm_model.text().strip())
+        self._sync_to_java("llm.model", self._llm_model.text().strip())
         # 开机自启写入注册表
         enabled = self._auto_launch_check.isChecked()
         self._config.set("auto_launch", enabled)
+        self._sync_to_java("auto_launch", enabled)
         if not set_auto_launch(enabled):
             QMessageBox.warning(self, "提示", "开机自启设置失败，请检查系统权限")
         self._config.save()

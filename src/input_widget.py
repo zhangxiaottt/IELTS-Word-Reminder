@@ -18,19 +18,32 @@ from PySide6.QtWidgets import (
 
 
 class _QueryWorker(QThread):
-    """后台词典查询线程：避免网络请求阻塞界面"""
+    """后台词典查询线程：避免网络请求阻塞界面
+
+    优先调用 Java 服务层（ApiClient），服务不可用时回落本地 DictAPI。
+    """
 
     result_ready = Signal(str, dict)  # (查询单词, 结果字典)
 
-    def __init__(self, api, word: str, parent=None):
+    def __init__(self, api, api_client, word: str, parent=None):
         super().__init__(parent)
-        self._api = api
+        self._api = api            # 本地 DictAPI（兜底）
+        self._api_client = api_client  # Java 服务层客户端（优先）
         self._word = word
 
     def run(self) -> None:
         """在线程中执行查询并发出结果信号"""
-        result = self._api.query(self._word) if self._api else {}
-        self.result_ready.emit(self._word, result)
+        result = None
+        if self._api_client is not None:
+            # 优先走 Java 服务层（有道词典封装在 Java 端）
+            try:
+                result = self._api_client.query_dict(self._word) or {}
+            except Exception:
+                result = None
+        if not result and self._api is not None:
+            # Java 不可用 → 回落本地词典
+            result = self._api.query(self._word) or {}
+        self.result_ready.emit(self._word, result or {})
 
 
 class InputWidget(QWidget):
@@ -43,13 +56,15 @@ class InputWidget(QWidget):
     COLOR_TEXT = "#333333"
     COLOR_GRAY = "#999999"
 
-    def __init__(self, config, word_manager, dict_api, parent: QWidget = None):
+    def __init__(self, config, word_manager, dict_api, parent: QWidget = None,
+                 api_client=None):
         """初始化录入窗口
 
         Args:
             config: ConfigManager 实例
             word_manager: WordManager 实例
             dict_api: DictAPI 实例
+            api_client: Java 服务层客户端（可选；None 时纯本地模式）
         """
         super().__init__(
             parent,
@@ -58,6 +73,7 @@ class InputWidget(QWidget):
         self._config = config
         self._wm = word_manager
         self._api = dict_api
+        self._api_client = api_client  # 混合架构：Java 服务层客户端
 
         # 查询状态
         self._query_timer = QTimer(self)   # 输入防抖定时器
@@ -205,7 +221,7 @@ class InputWidget(QWidget):
         self._meaning_edit.clear()
         self._example_label.setText("")
         # 丢弃旧查询线程（不强制终止，用单词比对过滤过期结果）
-        self._worker = _QueryWorker(self._api, word)
+        self._worker = _QueryWorker(self._api, self._api_client, word)
         self._worker.result_ready.connect(self._on_query_done)
         self._worker.start()
 
@@ -252,6 +268,7 @@ class InputWidget(QWidget):
         meaning = self._meaning_edit.text().strip()
 
         # 查重：单词已存在 → 确认是否更新释义
+        # （本地与 Java 服务共享同一数据库，本地读取即为权威）
         existing = self._wm.get_word_by_word(word)
         if existing:
             answer = QMessageBox.question(
@@ -262,16 +279,24 @@ class InputWidget(QWidget):
                 QMessageBox.Yes,
             )
             if answer == QMessageBox.Yes:
-                self._wm.update_word(
-                    existing["id"],
-                    {"phonetic": phonetic, "meaning": meaning, "example": example},
-                )
+                data = {"phonetic": phonetic, "meaning": meaning, "example": example}
+                updated = False
+                if self._api_client is not None:
+                    # 优先走 Java 服务层更新
+                    updated = self._api_client.update_word(existing["id"], data)
+                if not updated:
+                    updated = self._wm.update_word(existing["id"], data)
                 self._show_saved()
                 self.saved.emit({"word": word, "id": existing["id"]})
             return
 
-        # 新增单词
-        ok = self._wm.add_word(word, phonetic, meaning, example)
+        # 新增单词（优先 Java 服务层，失败回落本地）
+        ok = False
+        if self._api_client is not None:
+            row = self._api_client.add_word(word, phonetic, meaning, example)
+            ok = row is not None
+        if not ok:
+            ok = self._wm.add_word(word, phonetic, meaning, example)
         if not ok:
             QMessageBox.warning(self, "提示", "单词保存失败，请重试")
             return

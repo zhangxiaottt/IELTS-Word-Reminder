@@ -34,9 +34,10 @@ class ReviewArticleWindow(QMainWindow):
     closed = Signal()  # 关闭信号（主程序据此释放单例引用）
 
     def __init__(self, word_manager, parent: QWidget = None,
-                 data_file: str = None, config=None):
+                 data_file: str = None, config=None, api_client=None):
         super().__init__(parent)
         self._wm = word_manager
+        self._api_client = api_client  # 混合架构：Java 服务层客户端
         # 可选大模型客户端：由 config 构建（OpenAI 兼容、厂商无关）。
         # 配置并启用时用 AI 写文章；未配置 / 失败时自动回落本地模板。
         llm = None
@@ -145,8 +146,17 @@ class ReviewArticleWindow(QMainWindow):
     # 数据加载与渲染
     # ------------------------------------------------------------------ #
     def _open_date(self, date_str: str) -> None:
-        """加载指定日期的文章（无则自动生成并存档）"""
-        art = self._gen.get_or_generate(date_str)
+        """加载指定日期的文章（无则自动生成并存档）
+
+        优先走 Java 服务层（AI 生成在 Java 端），失败回落本地实现。
+        """
+        art = None
+        if self._api_client is not None:
+            # Java 端 getOrGenerate：缓存命中直接返回，否则生成并存档
+            art = self._api_client.generate_article(date=date_str, seed=None)
+        if not art or not art.get("text"):
+            # Java 不可用 / 生成失败 → 回落本地 ArticleGenerator
+            art = self._gen.get_or_generate(date_str)
         self._cur_date = date_str
         self._current = art
         self._render(art)
@@ -156,8 +166,13 @@ class ReviewArticleWindow(QMainWindow):
     def _regenerate(self) -> None:
         """换一篇：用新随机种子覆盖当天文章"""
         seed = random.randint(1, 10 ** 9)
-        art = self._gen.generate(date_str=self._cur_date, seed=seed)
-        self._gen.save(self._cur_date, art)
+        art = None
+        if self._api_client is not None:
+            # Java 端生成并用 seed 覆盖当天存档
+            art = self._api_client.generate_article(date=self._cur_date, seed=seed)
+        if not art or not art.get("text"):
+            art = self._gen.generate(date_str=self._cur_date, seed=seed)
+            self._gen.save(self._cur_date, art)
         self._current = art
         self._render(art)
 

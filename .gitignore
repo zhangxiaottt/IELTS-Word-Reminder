@@ -34,3 +34,6 @@ dist/
 assets/pets/*_raw.*
 
 tests/frames/
+
+# ---- Java 服务层编译产物（可 build.bat 重建） ----
+java-server/out/

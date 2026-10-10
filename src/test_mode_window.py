@@ -80,17 +80,19 @@ class TestModeWindow(QWidget):
 
     closed = Signal()  # 窗口关闭信号（供主程序恢复悬浮面板轮播）
 
-    def __init__(self, word_manager, parent: QWidget = None):
+    def __init__(self, word_manager, parent: QWidget = None, api_client=None):
         """初始化测试模式窗口
 
         Args:
             word_manager: WordManager 实例
+            api_client: Java 服务层客户端（可选；None 时纯本地模式）
         """
         super().__init__(
             parent,
             Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool,
         )
         self._wm = word_manager
+        self._api_client = api_client  # 混合架构：Java 服务层客户端
 
         # 测试状态
         self._questions = []       # 当前一轮的题目列表
@@ -298,10 +300,18 @@ class TestModeWindow(QWidget):
         self._show_question()
 
     def _build_pool(self) -> list:
-        """构建可出题词池：有释义且释义唯一（避免选项重复）"""
+        """构建可出题词池：有释义且释义唯一（避免选项重复）
+
+        优先走 Java 服务层查询（Java 与 Python 共享同一数据库），失败回落本地。
+        """
+        rows = None
+        if self._api_client is not None:
+            rows = self._api_client.get_words()
+        if not rows:
+            rows = self._wm.get_all_words()
         seen_meaning = {}
         pool = []
-        for row in self._wm.get_all_words():
+        for row in rows:
             meaning = (row.get("meaning") or "").strip()
             if not meaning:
                 continue

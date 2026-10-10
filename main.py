@@ -15,6 +15,7 @@
     python main.py --auto-quit 8    # 启动 8 秒后自动退出并保存，便于自动化冒烟测试
 """
 import os
+import subprocess
 import sys
 
 # ---- 高 DPI 自适应：必须在创建 QApplication 之前设置，避免高分屏模糊 ----
@@ -30,11 +31,12 @@ from PySide6.QtWidgets import (  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.utils import (  # noqa: E402
-    ensure_dirs, get_asset_path, set_auto_launch, get_auto_launch_enabled,
+    BASE_DIR, ensure_dirs, get_asset_path, set_auto_launch, get_auto_launch_enabled,
 )
 from src.config import ConfigManager  # noqa: E402
 from src.dict_api import DictAPI  # noqa: E402
 from src.word_manager import WordManager  # noqa: E402
+from src.api_client import ApiClient, wait_java_ready  # noqa: E402
 from src.float_panel import FloatPanel  # noqa: E402
 from src.input_widget import InputWidget  # noqa: E402
 from src.settings_window import SettingsWindow  # noqa: E402
@@ -94,8 +96,12 @@ class MainApp:
         self.wm = WordManager()
         self.api = DictAPI()
 
+        # ---- 混合架构：拉起 Java 服务层（失败则进入纯 Python 兜底模式） ----
+        self._java_proc = None
+        self.api_client = self._start_java_service()
+
         # ---- 核心：复习悬浮面板 ----
-        self.panel = FloatPanel(self.config, self.wm)
+        self.panel = FloatPanel(self.config, self.wm, api_client=self.api_client)
 
         # ---- 桌面小宠：跟随悬浮面板（Q版少女） ----
         self.pet = DesktopPet(self.config, self.panel)
@@ -118,6 +124,50 @@ class MainApp:
         self.panel.show()
         # 桌宠默认随面板显示（由配置控制开关）
         self._update_pet_visibility()
+
+    # ------------------------------------------------------------------ #
+    # Java 服务层拉起 / 关闭
+    # ------------------------------------------------------------------ #
+    def _start_java_service(self):
+        """启动 Java 服务子进程并等待就绪
+
+        返回 ApiClient 实例（服务未就绪也返回，调用方自动回退本地实现）。
+        Java 服务使用与 Python 相同的 config/config.json 与 data/word_lib.db，
+        SQLite 开启 WAL 模式支持双进程并发读写。
+        """
+        try:
+            server_dir = os.path.join(BASE_DIR, "java-server")
+            if not os.path.isdir(server_dir) or not os.path.isdir(
+                    os.path.join(server_dir, "out")):
+                return ApiClient.get_instance()  # 未构建 Java 端，纯 Python 模式
+
+            java_home = os.environ.get("JAVA_HOME", "")
+            java_exe = os.path.join(java_home, "bin", "java.exe") if java_home else "java"
+            cp = "out;" + os.path.join(server_dir, "lib", "*")
+            cmd = [java_exe, "-cp", cp, "com.ielts.reminder.server.Main"]
+            flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW 防黑窗
+            self._java_proc = subprocess.Popen(
+                cmd, cwd=server_dir, creationflags=flags,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            # 等待健康检查通过（最多 6 秒），失败则纯 Python 兜底
+            wait_java_ready(timeout=6.0)
+        except Exception:
+            self._java_proc = None  # Java 服务不可用时程序照常运行
+        return ApiClient.get_instance()
+
+    def _stop_java_service(self) -> None:
+        """退出时关闭 Java 服务子进程"""
+        try:
+            if self._java_proc is not None and self._java_proc.poll() is None:
+                self._java_proc.terminate()
+                try:
+                    self._java_proc.wait(timeout=3)
+                except Exception:
+                    self._java_proc.kill()
+        except Exception:
+            pass
+        self._java_proc = None
 
     def _update_pet_visibility(self) -> None:
         """根据配置与面板显隐状态决定桌宠是否显示"""
@@ -222,7 +272,8 @@ class MainApp:
     def open_input_widget(self) -> None:
         """打开单词录入窗口（单实例）"""
         if self._input_widget is None:
-            self._input_widget = InputWidget(self.config, self.wm, self.api)
+            self._input_widget = InputWidget(self.config, self.wm, self.api,
+                                             api_client=self.api_client)
             self._input_widget.saved.connect(self.panel.refresh_words)
             self._input_widget.destroyed.connect(
                 lambda: setattr(self, "_input_widget", None)
@@ -234,7 +285,8 @@ class MainApp:
     def open_settings_window(self) -> None:
         """打开设置窗口（单实例，实时生效信号接到面板）"""
         if self._settings_window is None:
-            self._settings_window = SettingsWindow(self.config)
+            self._settings_window = SettingsWindow(self.config,
+                                                   api_client=self.api_client)
             self._settings_window.interval_changed.connect(self.panel.set_interval)
             self._settings_window.opacity_changed.connect(self.panel.set_opacity)
             self._settings_window.background_changed.connect(self.panel.set_background)
@@ -264,7 +316,8 @@ class MainApp:
     def open_library_window(self) -> None:
         """打开单词库管理窗口（单实例，数据变化刷新面板）"""
         if self._library_window is None:
-            self._library_window = WordLibraryWindow(self.wm)
+            self._library_window = WordLibraryWindow(self.wm,
+                                                     api_client=self.api_client)
             self._library_window.data_changed.connect(self.panel.refresh_words)
             self._library_window.destroyed.connect(
                 lambda: setattr(self, "_library_window", None)
@@ -279,7 +332,7 @@ class MainApp:
         测试期间自动暂停复习轮播，关闭后恢复。
         """
         if self._test_window is None:
-            self._test_window = TestModeWindow(self.wm)
+            self._test_window = TestModeWindow(self.wm, api_client=self.api_client)
             # 关闭时恢复面板轮播（若测试前处于播放状态）
             self._test_window.closed.connect(self._on_test_closed)
             self._test_window.destroyed.connect(
@@ -308,7 +361,8 @@ class MainApp:
         try:
             if self._article_window is None:
                 self._article_window = ReviewArticleWindow(self.wm,
-                                                           config=self.config)
+                                                           config=self.config,
+                                                           api_client=self.api_client)
                 self._article_window.closed.connect(
                     lambda: setattr(self, "_article_window", None)
                 )
@@ -333,15 +387,21 @@ class MainApp:
             pass  # 保存失败不影响运行
 
     def quit_app(self) -> None:
-        """退出程序：保存面板位置、大小与配置"""
+        """退出程序：保存面板位置、大小与配置，关闭 Java 服务
+
+        关闭 Java 服务放在 finally 中，保证任何退出路径都不会残留子进程。
+        """
         try:
             # 保存悬浮面板几何信息
             self.panel._save_geometry()
             self.panel.set_opacity(float(self.config.get("panel.opacity", 0.85)))
             self.config.save()
-            self.tray.hide()
-            self.app.quit()
         except Exception:
+            pass
+        finally:
+            # 关闭 Java 服务层子进程
+            self._stop_java_service()
+            self.tray.hide()
             self.app.quit()
 
 

@@ -37,14 +37,16 @@ class WordLibraryWindow(QMainWindow):
         ("review_count", "复习次数", 80, True),
     ]
 
-    def __init__(self, word_manager, parent: QWidget = None):
+    def __init__(self, word_manager, parent: QWidget = None, api_client=None):
         """初始化单词库窗口
 
         Args:
             word_manager: WordManager 实例
+            api_client: Java 服务层客户端（可选；None 时纯本地模式）
         """
         super().__init__(parent)
         self._wm = word_manager
+        self._api_client = api_client  # 混合架构：Java 服务层客户端
 
         # 数据状态
         self._all_rows = []          # 当前筛选后的全部记录
@@ -234,16 +236,26 @@ class WordLibraryWindow(QMainWindow):
     # 数据加载 / 排序 / 分页
     # ------------------------------------------------------------------ #
     def reload_data(self) -> None:
-        """按当前筛选条件重新加载数据并刷新表格"""
+        """按当前筛选条件重新加载数据并刷新表格
+
+        优先走 Java 服务层（Java 与 Python 共享同一数据库），失败回落本地。
+        """
         keyword = self._search_edit.text().strip()
         date_from = None
         date_to = None
         if self._date_enabled.isChecked():
             date_from = self._date_from.date().toString("yyyy-MM-dd")
             date_to = self._date_to.date().toString("yyyy-MM-dd")
-        self._all_rows = self._wm.get_all_words(
-            keyword=keyword, date_from=date_from, date_to=date_to
-        )
+        rows = None
+        if self._api_client is not None:
+            rows = self._api_client.get_words(
+                keyword=keyword, date_from=date_from, date_to=date_to
+            )
+        if not rows:
+            rows = self._wm.get_all_words(
+                keyword=keyword, date_from=date_from, date_to=date_to
+            )
+        self._all_rows = rows
         self._page = 0
         self._sort_rows()
         self._render_page()
@@ -363,7 +375,13 @@ class WordLibraryWindow(QMainWindow):
         )
         if answer != QMessageBox.Yes:
             return
-        if self._wm.delete_words(ids):
+        ok = False
+        if self._api_client is not None:
+            # 优先走 Java 服务层批量删除
+            ok = self._api_client.delete_words(ids)
+        if not ok:
+            ok = self._wm.delete_words(ids)
+        if ok:
             self.reload_data()
             self.data_changed.emit()
             QMessageBox.information(self, "提示", "删除成功")
@@ -443,15 +461,17 @@ class WordLibraryWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return False
 
-        # 保存修改（允许清空释义/例句）
-        ok = self._wm.update_word(
-            row["id"],
-            {
-                "phonetic": phonetic_edit.text().strip(),
-                "meaning": meaning_edit.text().strip(),
-                "example": example_edit.text().strip(),
-            },
-        )
+        # 保存修改（允许清空释义/例句）；优先 Java 服务层，失败回落本地
+        data = {
+            "phonetic": phonetic_edit.text().strip(),
+            "meaning": meaning_edit.text().strip(),
+            "example": example_edit.text().strip(),
+        }
+        ok = False
+        if self._api_client is not None:
+            ok = self._api_client.update_word(row["id"], data)
+        if not ok:
+            ok = self._wm.update_word(row["id"], data)
         if not ok:
             QMessageBox.warning(self, "提示", "保存失败，请重试")
             return False

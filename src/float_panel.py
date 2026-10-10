@@ -383,12 +383,14 @@ class FloatPanel(QWidget):
     COLOR_GRAY = "#999999"
     COLOR_BG = "#FFFFFF"
 
-    def __init__(self, config, word_manager, parent: QWidget = None):
+    def __init__(self, config, word_manager, parent: QWidget = None,
+                 api_client=None):
         """初始化悬浮面板
 
         Args:
             config: ConfigManager 实例
             word_manager: WordManager 实例
+            api_client: Java 服务层客户端（可选；None 时纯本地模式）
         """
         super().__init__(
             parent,
@@ -396,6 +398,7 @@ class FloatPanel(QWidget):
         )
         self._config = config
         self._wm = word_manager
+        self._api_client = api_client  # 混合架构：Java 服务层客户端
 
         # 轮播状态
         self._words = []          # 当前复习单词列表
@@ -702,12 +705,20 @@ class FloatPanel(QWidget):
     # 单词展示
     # ------------------------------------------------------------------ #
     def refresh_words(self) -> None:
-        """重新加载复习单词列表（录入/导入/删除后调用）"""
+        """重新加载复习单词列表（录入/导入/删除后调用）
+
+        优先走 Java 服务层（复习算法在 Java 端），失败回落本地。
+        """
         try:
             current_id = None
             if 0 <= self._index < len(self._words):
                 current_id = self._words[self._index].get("id")
-            self._words = self._wm.get_review_word_list()
+            words = None
+            if self._api_client is not None:
+                words = self._api_client.get_review_list()
+            if not words:
+                words = self._wm.get_review_word_list()
+            self._words = words
             # 尽量保持当前展示的单词
             self._index = -1
             for i, row in enumerate(self._words):
@@ -772,11 +783,18 @@ class FloatPanel(QWidget):
         self._empty_label.show()
 
     def _on_mark(self, is_known: bool) -> None:
-        """点击「认识/不认识」：更新熟悉度并切到下一个单词"""
+        """点击「认识/不认识」：更新熟悉度并切到下一个单词
+
+        优先走 Java 服务层（熟悉度算法在 Java 端），失败回落本地。
+        """
         if not self._words:
             return
         row = self._words[self._index]
-        self._wm.mark_familiar(row["id"], is_known)
+        updated = False
+        if self._api_client is not None:
+            updated = self._api_client.mark_familiar(row["id"], is_known)
+        if not updated:
+            self._wm.mark_familiar(row["id"], is_known)
         # 更新本地列表中的熟悉度，保持数据一致
         self.next_word()
 
