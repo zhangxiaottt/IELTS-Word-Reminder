@@ -327,9 +327,10 @@ class DesktopPet(QWidget):
     # 每拍的额外纵向压缩：触地拍承重下沉，经过拍回弹
     WALK_SQUASH = (0.018, 0.0, 0.018, 0.0)
     # 一拍的位移。原为 8px，换算下来每秒要换 6~7 次步，
-    # 起伏频率高得像原地抽搐；拉长到 16px，步频回到每秒 3 步左右
-    FRAME_STEP_PX = 16.0
-    WALK_BOB_AMP = 1.5       # 每拍起伏幅度（像素），步频降下来后 1.5px 已够
+    # 起伏频率高得像原地抽搐；后来 16px 仍有 3.3 拍/秒，看着像"抖腿"，
+    # 现在拉长到 30px，步频约 1.8 拍/秒，脚步和地面速度仍然严格同步（不走滑步）
+    FRAME_STEP_PX = 30.0     # 一拍的跨步位移：步频降到 ~1.8 拍/秒，腿不再"原地高频抖"
+    WALK_BOB_AMP = 1.0       # 每拍起伏幅度（像素）
     WALK_LEAN_AMP = 1.6      # 重心左右摆动幅度（像素）
     BOB_EASE = 0.25          # 纵向起伏跟随系数
     BOB_TARGET_EASE = 0.12   # 起伏目标本身的平滑系数（目标阶跃也不会顿一下）
@@ -343,7 +344,7 @@ class DesktopPet(QWidget):
     WANDER_STEP = 0.85       # 像素/tick（约 53 px/s）
     # 巡逻模式：沿屏幕底部自己来回走，用侧身帧
     PATROL_SPEED = 1.0       # 像素/tick（约 63 px/s）
-    PATROL_FRAME_STEP_PX = 18.0  # 侧身一拍的位移，同样用于锁节奏
+    PATROL_FRAME_STEP_PX = 34.0  # 侧身一拍的位移，同样用于锁节奏
     # 跳跃：抛物线 + 挤压/拉伸
     JUMP_H = 72
     JUMP_TICKS = 44          # 44 tick × 16ms ≈ 0.7s
@@ -461,7 +462,7 @@ class DesktopPet(QWidget):
 
         self._wander_timer = QTimer(self)
         self._wander_timer.timeout.connect(self._pick_target)
-        self._wander_timer.start(random.randint(2500, 5000))
+        self._wander_timer.start(random.randint(4500, 8000))
 
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._do_blink)
@@ -643,7 +644,7 @@ class DesktopPet(QWidget):
         ax, _ = self._base_pos
         left, right, _, _ = self._allowed_region()
         self._target_dx = random.randint(left - ax, right - ax)
-        self._wander_timer.start(random.randint(2500, 5000))
+        self._wander_timer.start(random.randint(4500, 8000))
 
     def _pick_look(self) -> None:
         """随机决定下一次自主视线方向：多数时间看正前方，偶尔左右瞥一眼"""
@@ -706,7 +707,7 @@ class DesktopPet(QWidget):
         else:
             speed, step = self.WANDER_STEP, self.FRAME_STEP_PX
         px_per_ms = max(0.001, speed / float(self.TICK_MS))
-        return int(max(90, min(300, step / px_per_ms)))
+        return int(max(90, min(650, step / px_per_ms)))
 
     def _reset_to_base_frame(self) -> None:
         """离开走路状态时切回基准帧（patrol 模式用侧身站姿，其余回当前待机帧）"""
@@ -783,9 +784,9 @@ class DesktopPet(QWidget):
         # 换姿势 / 停步的弹性挤压衰减
         if self._pose_pop > 0:
             self._pose_pop = max(0.0, self._pose_pop - 0.09)
-        # 转身挤压衰减（约 160ms 内横向压扁再回弹）
+        # 转身挤压衰减（约 290ms 内横向压扁再回弹）
         if self._turn > 0:
-            self._turn = max(0.0, self._turn - 0.09)
+            self._turn = max(0.0, self._turn - 0.06)
         # 头发/裙摆惯性：向移动的反方向滞后摆动（越靠上越明显，脚底不动）
         sway_target = self._gaze * 0.5
         if self._state == "walk":
@@ -1072,10 +1073,12 @@ class DesktopPet(QWidget):
         if self._pose_pop > 0:
             sy *= 1.0 - 0.05 * self._pose_pop
             sx *= 1.0 + 0.06 * self._pose_pop
-        # 转身：横向压扁再回弹（绕竖轴旋转的透视错觉），压扁时略拉高
+        # 转身：横向压扁再回弹（绕竖轴旋转的透视错觉），压扁时略拉高。
+        # 旧值 0.45 会在 0.18s 内把角色横向压掉 45%（约 100px），
+        # 每次换方向都像被猛地捏扁 —— 这就是"隔一会儿就剧烈抖一下"的来源
         if self._turn > 0:
-            sx *= 1.0 - 0.45 * self._turn
-            sy *= 1.0 + 0.04 * self._turn
+            sx *= 1.0 - 0.08 * self._turn
+            sy *= 1.0 + 0.03 * self._turn
 
         # 行走：每拍落地压缩（承重下沉）+ 重心摆动 + 轻微侧倾
         lean = 0.0
