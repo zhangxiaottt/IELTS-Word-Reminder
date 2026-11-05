@@ -173,7 +173,7 @@ class BackgroundCard(QWidget):
                 "phase": (i / float(self.STAR_COUNT)
                           + rnd.uniform(0.0, 0.03)) % 1.0,  # 彼此错开，形成连续喷发
                 "period": self.STAR_PERIOD * rnd.uniform(0.82, 1.18),
-                "size": rnd.uniform(1.5, 2.6),
+                "size": rnd.uniform(2.3, 3.6),
                 "edge": rnd.uniform(0.0, 3.0),              # 墙面流下的横向错位，避免排成一条线
                 "wobble": rnd.uniform(0.0, math.tau),
                 "color": QColor(self.STAR_COLORS[rnd.randrange(len(self.STAR_COLORS))]),
@@ -513,7 +513,7 @@ class BackgroundCard(QWidget):
         """
         mouth_x = ch.center().x()
         mouth_y = ch.top() + 3.0
-        scale = max(0.85, min(1.5, W / 420.0))   # 面板越大星星越大，避免大面板上像碎屑
+        scale = max(1.0, min(1.7, W / 380.0))   # 面板越大星星越大，避免大面板上像碎屑
         apex_y = max(3.0, mouth_y - max(10.0, ch.top() * 0.9))  # 顶到窗口上方留白内
         geo = (mouth_x, mouth_y, apex_y, W, roof_h, ridge_y, inset, H - 4.0)
 
@@ -546,12 +546,12 @@ class BackgroundCard(QWidget):
 
             # 柔光
             gc = QColor(col)
-            gc.setAlpha(int(a * 0.38))
-            glow = QRadialGradient(QPointF(x, y), r * 2.6)
+            gc.setAlpha(int(a * 0.22))
+            glow = QRadialGradient(QPointF(x, y), r * 2.0)
             glow.setColorAt(0.0, gc)
             glow.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
             painter.setBrush(glow)
-            painter.drawEllipse(QPointF(x, y), r * 2.6, r * 2.6)
+            painter.drawEllipse(QPointF(x, y), r * 2.0, r * 2.0)
 
             # 星形本体：边流边转，末端收小
             body = QColor(col)
