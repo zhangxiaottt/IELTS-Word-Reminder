@@ -143,8 +143,8 @@ class BackgroundCard(QWidget):
     ROOF_RIDGE = 0.20      # 屋脊在屋顶区内的高度比例（留出喷星空间）
     WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
     BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
-    STAR_COUNT = 78        # 火山喷出的星星总量（同时铺满屋顶与墙面）
-    STAR_PERIOD = 2.8      # 一颗星星从喷出到墙角消失的周期（秒）
+    STAR_COUNT = 200       # 火山喷出的星星总量（同时铺满屋顶与墙面）
+    STAR_PERIOD = 5.0      # 一颗星星从喷出到墙角消失的周期（秒）
     STAR_COLORS = (        # 五颜六色的星星：金/粉/蓝/紫/薄荷/橘
         "#FFD84D", "#FF6FA5", "#6FC7FF",
         "#B58CFF", "#6FE7B0", "#FF9A52",
