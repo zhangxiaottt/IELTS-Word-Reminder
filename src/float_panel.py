@@ -13,6 +13,7 @@
     → 底部按钮行：「认识」「不认识」+ 右侧「暂停/继续」「下一个」
 """
 import math
+import random
 
 from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QPointF
 from PySide6.QtGui import (
@@ -142,17 +143,44 @@ class BackgroundCard(QWidget):
     ROOF_RIDGE = 0.20      # 屋脊在屋顶区内的高度比例（留出喷星空间）
     WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
     BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
-    STAR_COUNT = 6         # 烟囱一次喷出的星星数量
-    STAR_PERIOD = 3.2      # 一颗星星从喷出到消失的周期（秒）
+    STAR_COUNT = 78        # 火山喷出的星星总量（同时铺满屋顶与墙面）
+    STAR_PERIOD = 2.8      # 一颗星星从喷出到墙角消失的周期（秒）
+    STAR_COLORS = (        # 五颜六色的星星：金/粉/蓝/紫/薄荷/橘
+        "#FFD84D", "#FF6FA5", "#6FC7FF",
+        "#B58CFF", "#6FE7B0", "#FF9A52",
+    )
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self._bg_pixmap = None   # 原始背景图
         self._bg_scaled = None   # 按当前尺寸缩放后的缓存
         self._house_mode = True  # 是否绘制「房子样式」（默认开启）
-        self._fx_t = 0.0         # 烟囱喷星动画相位（秒）
+        self._fx_t = 0.0         # 火山喷星动画相位（秒）
+
+        # 预生成每颗星的随机参数：保证动画稳定（不会每帧抖动/换颜色）
+        rnd = random.Random(20261105)
+        self._star_seeds = []
+        for i in range(self.STAR_COUNT):
+            side = 1.0 if rnd.random() < 0.68 else -1.0   # 多数从右坡流下（烟囱在右侧）
+            if side > 0 and rnd.random() < 0.22:
+                # 一部分星星落在烟囱上，顺着烟囱外壁往下淌
+                s = rnd.uniform(0.53, 0.69)
+            else:
+                s = rnd.uniform(0.16, 0.88)               # 落在屋顶坡面上的位置比例
+            self._star_seeds.append({
+                "side": side,
+                "s": s,
+                "phase": (i / float(self.STAR_COUNT)
+                          + rnd.uniform(0.0, 0.03)) % 1.0,  # 彼此错开，形成连续喷发
+                "period": self.STAR_PERIOD * rnd.uniform(0.82, 1.18),
+                "size": rnd.uniform(1.5, 2.6),
+                "edge": rnd.uniform(0.0, 3.0),              # 墙面流下的横向错位，避免排成一条线
+                "wobble": rnd.uniform(0.0, math.tau),
+                "color": QColor(self.STAR_COLORS[rnd.randrange(len(self.STAR_COLORS))]),
+            })
+
         self._fx_timer = QTimer(self)
-        self._fx_timer.setInterval(45)   # 约 22fps，只重绘烟囱口小区域
+        self._fx_timer.setInterval(45)   # 约 22fps；星星会流到墙角，需要重绘整张卡片
         self._fx_timer.timeout.connect(self._fx_tick)
         self.setMouseTracking(True)
 
@@ -182,14 +210,11 @@ class BackgroundCard(QWidget):
             self._fx_timer.stop()
 
     def _fx_tick(self) -> None:
-        """推进喷星相位，只重绘烟囱周边小区域"""
+        """推进火山喷星相位，重绘整张卡片（星星一路流到墙角）"""
         self._fx_t += self._fx_timer.interval() / 1000.0
         if self._fx_t >= 1e6:
             self._fx_t -= 1e6
-        ch = self._chimney_rect()
-        self.update(
-            QRectF(ch.x() - 12, 0, ch.width() + 105, ch.top() + 34).toAlignedRect()
-        )
+        self.update()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -383,8 +408,6 @@ class BackgroundCard(QWidget):
         painter.setBrush(QColor("#8C3F55"))
         painter.drawEllipse(QRectF(ch.x() + 7, ch.y() + 2.5,
                                    ch.width() - 14, 3.5))
-        # 喷出来的星星
-        self._draw_stars(painter, ch)
 
         # ---- 大窗户（文字区）：浅蓝玻璃 + 粉色窗框 + 窗台 ----
         wy = roof_h + 2
@@ -417,6 +440,9 @@ class BackgroundCard(QWidget):
         for fx in (8, 18, 28, W - 28, W - 18, W - 8):
             self._draw_flower(painter, fx, H - 5)
 
+        # ---- 火山喷发的星星（最后画，让星星流在窗户/草地前面）----
+        self._draw_stars(painter, ch, W, H, roof_h, ridge_y, inset)
+
     @staticmethod
     def _star_polygon(cx: float, cy: float, outer: float, inner: float,
                       rot: float) -> QPolygonF:
@@ -428,44 +454,116 @@ class BackgroundCard(QWidget):
             pts.append(QPointF(cx + math.cos(ang) * rad, cy + math.sin(ang) * rad))
         return QPolygonF(pts)
 
-    def _draw_stars(self, painter: QPainter, ch: QRectF) -> None:
-        """烟囱柔柔地飘出星星：粒子少、速度慢、光晕大而淡，边转边消散
+    def _star_xy(self, seed: dict, ph: float, geo: tuple) -> tuple:
+        """按相位计算一颗星的坐标（火山喷发 → 落屋顶 → 沿坡下滑 → 沿墙流下）
 
-        动画相位由 _fx_timer 推进；每颗星按固定周期循环，
-        这样只需重绘烟囱附近的小区域，开销很小。
+        路径分四段，比例固定：喷出 18%、坠落 22%、屋顶 28%、墙壁 32%。
+        geo = (烟囱口x, 烟囱口y, 喷发顶点y, 面板宽, 屋顶高, 屋脊y, 内收, 地面y)
         """
-        mouth_x = ch.center().x() + ch.width() * 0.05
+        mouth_x, mouth_y, apex_y, W, roof_h, ridge_y, inset, floor_y = geo
+        side = seed["side"]
+        s = seed["s"]
+
+        # 屋顶坡面上的落点（side=+1 右坡，-1 左坡）
+        ridge_x = W / 2.0
+        if side > 0:
+            drop_x = ridge_x + s * (W - inset - ridge_x)
+        else:
+            drop_x = ridge_x - s * (ridge_x - inset)
+        drop_y = ridge_y + s * (roof_h - ridge_y) + 1.2   # 压在瓦面上
+
+        apex_x = mouth_x + (drop_x - mouth_x) * 0.55       # 顶点向落点散开，形成扇形喷发
+        eave_x = (inset + 2.0 + seed["edge"]) if side < 0 \
+            else (W - inset - 2.0 - seed["edge"])
+        eave_y = roof_h + 2.0
+
+        if ph < 0.18:
+            # 喷出：猛地冲起，越接近顶点越慢（火山喷发初速）
+            t = ph / 0.18
+            e = 1.0 - (1.0 - t) ** 2.6
+            return (mouth_x + (apex_x - mouth_x) * e,
+                    mouth_y + (apex_y - mouth_y) * e)
+        if ph < 0.40:
+            # 坠落：重力加速砸向屋顶
+            t = (ph - 0.18) / 0.22
+            e = t ** 1.7
+            return (apex_x + (drop_x - apex_x) * e,
+                    apex_y + (drop_y - apex_y) * e)
+        if ph < 0.68:
+            # 沿屋顶坡面向屋檐滑落，贴着瓦面轻微摆动
+            t = (ph - 0.40) / 0.28
+            e = t ** 1.6
+            x = drop_x + (eave_x - drop_x) * e
+            y = drop_y + (eave_y - drop_y) * e
+            x += math.sin(t * math.pi + seed["wobble"]) * 1.2
+            return (x, y)
+        # 沿墙壁竖直流下，横向摆动逐渐收敛，直到墙角
+        t = (ph - 0.68) / 0.32
+        e = t ** 1.15
+        x = eave_x + math.sin(t * math.pi * 2.0 + seed["wobble"]) * 2.2 * (1.0 - t)
+        y = eave_y + (floor_y - eave_y) * e
+        return (x, y)
+
+    def _draw_stars(self, painter: QPainter, ch: QRectF, W: float, H: float,
+                    roof_h: float, ridge_y: float, inset: float) -> None:
+        """火山喷发式星星：大量彩色星星从烟囱喷出，沿屋顶/墙壁流下，到墙角消散
+
+        相位由 _fx_timer 推进，每颗星按自己的周期循环；路径是纯参数化计算，
+        不保存粒子状态，因此重绘整张卡片也没有状态开销。
+        """
+        mouth_x = ch.center().x()
         mouth_y = ch.top() + 3.0
-        rise = max(10.0, min(16.0, ch.top() + 2.0))   # 喷出高度（不冲出窗口顶部）
-        drift = max(24.0, ch.width() * 0.70)          # 向右飘散距离
-        colors = (
-            QColor("#FFEFC2"), QColor("#FFD9E2"),
-            QColor("#FFF6E5"), QColor("#FFC9DC"),
-        )
-        for i in range(self.STAR_COUNT):
-            ph = (self._fx_t / self.STAR_PERIOD + i / float(self.STAR_COUNT)) % 1.0
-            ease = ph * ph * (3.0 - 2.0 * ph)          # 平滑起步与收尾，不是"喷射"
-            px = mouth_x + ease * drift + math.sin(ph * 3.0 + i * 1.1) * 2.0
-            py = mouth_y - ease * rise
-            a = int(170 * (1.0 - ph) ** 1.2)           # 全程缓慢淡出
-            if a <= 3:
+        scale = max(0.85, min(1.5, W / 420.0))   # 面板越大星星越大，避免大面板上像碎屑
+        apex_y = max(3.0, mouth_y - max(10.0, ch.top() * 0.9))  # 顶到窗口上方留白内
+        geo = (mouth_x, mouth_y, apex_y, W, roof_h, ridge_y, inset, H - 4.0)
+
+        painter.setPen(Qt.NoPen)
+        for seed in self._star_seeds:
+            ph = (self._fx_t / seed["period"] + seed["phase"]) % 1.0
+            x, y = self._star_xy(seed, ph, geo)
+
+            # 亮度：喷出最亮，沿屋顶慢慢转弱，墙壁段继续变淡，到墙角彻底消失
+            if ph < 0.66:
+                a = 240
+            else:
+                k = (ph - 0.66) / 0.34
+                a = int(240 * (1.0 - k) ** 0.9)
+            if a <= 2:
                 continue
-            r = 1.8 + 1.8 * math.sin(math.pi * ph)     # 小幅度呼吸，不过分抢眼
-            col = colors[i % len(colors)]
-            # 大而淡的柔光，让星星像雾一样轻轻亮起
+
+            r = seed["size"] * scale * (1.0 - 0.3 * max(0.0, (ph - 0.68) / 0.32))
+            col = seed["color"]
+
+            # 两段余晖拖尾：让星星有"流淌"的轨迹
+            for d, ta in ((0.024, 0.32), (0.050, 0.12)):
+                if ph <= d:
+                    continue
+                tx, ty = self._star_xy(seed, ph - d, geo)
+                tc = QColor(col)
+                tc.setAlpha(int(a * ta))
+                painter.setBrush(tc)
+                painter.drawEllipse(QPointF(tx, ty), r * 0.85, r * 0.85)
+
+            # 柔光
             gc = QColor(col)
-            gc.setAlpha(int(a * 0.35))
-            glow = QRadialGradient(QPointF(px, py), r * 3.0)
+            gc.setAlpha(int(a * 0.38))
+            glow = QRadialGradient(QPointF(x, y), r * 2.6)
             glow.setColorAt(0.0, gc)
             glow.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
-            painter.setPen(Qt.NoPen)
             painter.setBrush(glow)
-            painter.drawEllipse(QPointF(px, py), r * 3.0, r * 3.0)
-            # 四角星本体：慢慢转，尖角收得更圆润一些
-            star = self._star_polygon(px, py, r * 1.6, r * 0.55,
-                                      math.radians(ph * 60 + i * 30))
-            painter.setBrush(col)
-            painter.drawPolygon(star)
+            painter.drawEllipse(QPointF(x, y), r * 2.6, r * 2.6)
+
+            # 星形本体：边流边转，末端收小
+            body = QColor(col)
+            body.setAlpha(a)
+            painter.setBrush(body)
+            painter.drawPolygon(self._star_polygon(
+                x, y, r * 1.7, r * 0.6,
+                math.radians(ph * 220 + seed["wobble"]),
+            ))
+            # 白色高光核心，像刚喷出来的火星
+            painter.setBrush(QColor(255, 255, 255, min(255, int(a * 0.8))))
+            painter.drawEllipse(QPointF(x, y), r * 0.34, r * 0.34)
 
     @staticmethod
     def _draw_heart(painter: QPainter, cx: float, cy: float, s: float, color: QColor) -> None:
