@@ -287,6 +287,9 @@ class DesktopPet(QWidget):
     WARP_STRIPS = 12         # 2.5D 视差形变的分条数（横向条带逐条偏移，头摆脚不动）
     SWAY_MAX = 5.0           # 头发/裙摆的滞后摆动最大偏移（像素）
     MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
+    MASK_VPAD = 10           # 掩码纵向膨胀：氛围光晕在头顶/脚下发光，不膨胀会被硬裁掉
+    BREATH_WARP = 1.4        # 呼吸时上半身纵向扩张倍数（脚底固定，胸腔起伏有体积感）
+    SPRITE_FIT = 0.95        # 角色在窗口内缩到 95%：给跳跃/伸懒腰留出头顶余量，避免被窗口上边裁切
     SHADOW_DX = 2            # 角色自阴影右下偏移
     SHADOW_DY = 3
     SHADOW_ALPHA = 0.12      # 自阴影不透明度（过重会把角色压成灰边）
@@ -386,6 +389,8 @@ class DesktopPet(QWidget):
         self._turn = 0.0             # 转身挤压（0..1）：横向压扁再回弹，模拟绕竖轴转身
         self._last_face = 1
         self._sway = 0.0             # 头发/裙摆滞后偏移（2.5D 形变用）
+        self._look_target = 0.0       # 自主视线目标（-1..1，光标不在附近时用）
+        self._look_bias = 0.0         # 缓动后的自主视线
         self._base_pos = (0, 0)
         self._dragging = False
         self._drag_press_global = None
@@ -410,6 +415,11 @@ class DesktopPet(QWidget):
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._do_blink)
         self._blink_timer.start(random.randint(2200, 4200))
+
+        # 自主视线：光标不在附近时，隔几秒自己换个方向看看
+        self._look_timer = QTimer(self)
+        self._look_timer.timeout.connect(self._pick_look)
+        self._look_timer.start(random.randint(3500, 6000))
 
         # 走路帧循环定时器（走路时切换迈步帧）
         self._walk_timer = QTimer(self)
@@ -484,6 +494,13 @@ class DesktopPet(QWidget):
                             x0 = -1
                 if x0 >= 0:
                     region = region.united(self._row_region(x0, iw - 1, y, w))
+        # 纵向膨胀：轮廓只占角色所在的行，氛围光晕与高光会向上/向下溢出，
+        # 不把掩码上下各撑开一段，光晕就会被切成一条生硬的直边。
+        if self.MASK_VPAD > 0:
+            grown = QRegion()
+            for dy in range(-self.MASK_VPAD, self.MASK_VPAD + 1):
+                grown = grown.united(region.translated(0, dy))
+            region = grown
         self.setMask(region)
 
     # ------------------------------------------------------------------ #
@@ -569,6 +586,13 @@ class DesktopPet(QWidget):
         left, right, _, _ = self._allowed_region()
         self._target_dx = random.randint(left - ax, right - ax)
         self._wander_timer.start(random.randint(2500, 5000))
+
+    def _pick_look(self) -> None:
+        """随机决定下一次自主视线方向：多数时间看正前方，偶尔左右瞥一眼"""
+        self._look_target = random.choice(
+            (0.0, 0.0, 0.0, -0.7, 0.7, -1.0, 1.0)
+        )
+        self._look_timer.start(random.randint(3200, 6500))
 
     # ------------------------------------------------------------------ #
     # 动画：状态机
@@ -681,8 +705,11 @@ class DesktopPet(QWidget):
         if not self.isVisible() or not self._panel.isVisible() or self._dragging:
             return
 
-        # 呼吸 / 伸懒腰衰减
-        self._breath = math.sin(self._t * self.BREATH_SPEED) * self.BREATH_AMP
+        # 呼吸 / 伸懒腰衰减（呼吸速度做极慢的微调，避免机械的等周期起伏）
+        breath_speed = self.BREATH_SPEED * (
+            1.0 + 0.10 * math.sin(self._t * 0.0035)
+        )
+        self._breath = math.sin(self._t * breath_speed) * self.BREATH_AMP
         if self._stretch > 0:
             self._stretch -= 0.008
             if self._stretch < 0:
@@ -698,8 +725,10 @@ class DesktopPet(QWidget):
         if self._state == "walk":
             sway_target += 2.2 * self._face
         elif self._state == "idle":
-            # 待机时靠呼吸带动上半身极慢地晃，避免站着像一张静止贴纸
+            # 待机时靠呼吸带动上半身极慢地晃，避免站着像一张静止贴纸；
+            # 再叠一层几秒周期的左右重心转移，人才会"自己站着"而不是定住
             sway_target += math.sin(self._t * self.BOB_SPEED * 0.8) * 1.3
+            sway_target += math.sin(self._t * 0.021) * 1.5
         sway_target = max(-self.SWAY_MAX, min(self.SWAY_MAX, sway_target))
         self._sway += (sway_target - self._sway) * 0.14
 
@@ -708,7 +737,11 @@ class DesktopPet(QWidget):
         target_gaze = 0.0
         if abs(rel) < self.GAZE_RADIUS:
             target_gaze = (rel / float(self.GAZE_RADIUS)) * self.GAZE_AMP
+        elif self._state == "idle":
+            # 光标不在附近：自己偶尔左右看看，让待机不再是一张固定的脸
+            target_gaze = self._look_bias * self.GAZE_AMP * 0.8
         self._gaze += (target_gaze - self._gaze) * self.GAZE_EASE
+        self._look_bias += (self._look_target - self._look_bias) * 0.06
 
         # 当前拍内进度（驱动上下起伏与重心摆动）
         if self._state == "walk":
@@ -828,6 +861,11 @@ class DesktopPet(QWidget):
         if self._state == "jump":
             h = math.sin(math.pi * self._jump_phase)  # 0..1
             self._shadow.set_state(1.0 - 0.45 * h, 150 - int(100 * h))
+        elif self._state == "walk":
+            # 与步频同步：抬腿腾空瞬间影子收窄变淡，触地拍最宽最深
+            p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
+            air = abs(math.sin(math.pi * p))
+            self._shadow.set_state(1.0 - 0.10 * air, 150 - int(22 * air))
         else:
             self._shadow.set_state(1.0, 150)
         self._shadow.show()
@@ -853,27 +891,42 @@ class DesktopPet(QWidget):
         self._scale_cache[key] = sp
         return sp
 
-    def _draw_warped(self, painter, pm: QPixmap, w: float, h: float) -> None:
-        """2.5D 分层形变：把贴图切成横向条带，顶部随摆动偏移、脚底固定
+    def _draw_warped(self, painter, pm: QPixmap, w: float, h: float,
+                     breath: float = 0.0) -> None:
+        """2.5D 分层形变：横向剪切 + 纵向呼吸扩张
 
-        平涂立绘按单张整体位移会像"整块纸片平移"，分条错位后头/上半身
-        有横向剪切，视觉上像有体积的身体在扭动，脚底仍然钉在地面。
+        把贴图切成横向条带逐条错位：顶部随摆动偏移、脚底固定，
+        平涂立绘就不会像"整块纸片平移"，而像有体积的身体在扭动。
+
+        纵向再按"顶重脚轻"的权重拉伸，呼吸时胸腔/头部起伏而双腿不动，
+        避免整张图等比缩放那种"橡皮人"式的拉伸感。
         """
         sway = self._sway
-        if abs(sway) < 0.35:
+        if abs(sway) < 0.35 and abs(breath) < 0.004:
             painter.drawPixmap(0, 0, pm)
             return
         strips = self.WARP_STRIPS
         sw, sh = pm.width(), pm.height()
-        band = h / float(strips)
+        # 纵向权重：f=1 头顶 / f=0 脚底，呼吸扩张全部集中在上半身
+        weights = []
+        total = 0.0
         for i in range(strips):
-            f = i / float(strips - 1)          # 0=头顶，1=脚底
-            dx = -sway * (1.0 - f)             # 越靠上偏移越大，脚底为 0
+            f = 1.0 - i / float(strips - 1)
+            wt = 1.0 + breath * f
+            weights.append(wt)
+            total += wt
+        scale_h = h / total
+        y = 0.0
+        for i in range(strips):
+            f = 1.0 - i / float(strips - 1)   # 0=头顶，1=脚底
+            dx = -sway * (1.0 - f)            # 越靠上偏移越大，脚底为 0
+            band = weights[i] * scale_h
             sy0 = sh * i / float(strips)
             sy1 = sh * (i + 1) / float(strips)
             painter.drawPixmap(
-                QRectF(dx, band * i, w, band), pm,
+                QRectF(dx, y, w, band), pm,
                 QRectF(0, sy0, sw, sy1 - sy0))
+            y += band
 
     def _silhouette(self, pm: QPixmap) -> QPixmap:
         """生成角色剪影（保留原 alpha、填充深色），用于角色自阴影
@@ -947,8 +1000,10 @@ class DesktopPet(QWidget):
             sy = 1.0 - self.LAND_SQUASH * self._land_squash
             sx = 1.0 + self.LAND_SQUASH * 1.3 * self._land_squash
         else:                 # 呼吸 + 伸懒腰
-            sy = 1.0 + self._breath + self._stretch
-            sx = 1.0 - self._breath * 0.5 - self._stretch * 0.6
+            # 呼吸的纵向变化主要交给 _draw_warped 的"上半身扩张"，
+            # 这里只保留很轻的整体缩放，避免双腿被一起拉长
+            sy = 1.0 + self._breath * 0.45 + self._stretch
+            sx = 1.0 - self._breath * 0.3 - self._stretch * 0.6
 
         # 换姿势/停步的弹性挤压（掩盖硬切）
         if self._pose_pop > 0:
@@ -975,6 +1030,9 @@ class DesktopPet(QWidget):
             if self._mode == "patrol":
                 lean = 2.0      # 侧身走持续前压
 
+        # 呼吸/伸懒腰的纵向体感：上半身随胸腔扩张上浮，脚底钉住不动
+        breath_warp = self._breath * self.BREATH_WARP + self._stretch * 1.1
+
         def draw_one(target, opacity: float, dx: float = 0.0, dy: float = 0.0) -> None:
             """按当前变换绘制一帧（target 为已预缩放的贴图或剪影）"""
             if target is None or target.isNull() or opacity <= 0.01:
@@ -983,11 +1041,12 @@ class DesktopPet(QWidget):
             painter.setOpacity(opacity)
             painter.translate(w / 2.0 + dx, h + dy)
             painter.rotate(rot)
-            painter.scale(sx, sy)
+            # 整体收缩 SPRITE_FIT：拉伸/跳跃时头顶还有余量，不会被窗口上沿切平
+            painter.scale(sx * self.SPRITE_FIT, sy * self.SPRITE_FIT)
             if self._face < 0:
                 painter.scale(-1.0, 1.0)   # 朝左：水平翻转
             painter.translate(-w / 2.0 + (self._gaze + lean) * self._face, -h)
-            self._draw_warped(painter, target, w, h)
+            self._draw_warped(painter, target, w, h, breath_warp)
             painter.restore()
 
         # 0) 背光氛围：角色后方一层暖色柔光，把它从桌面背景里"托"起来
@@ -1005,16 +1064,20 @@ class DesktopPet(QWidget):
         draw_one(sil, self.SHADOW_ALPHA,
                  self.SHADOW_DX - lx * 3.0, self.SHADOW_DY - ly * 2.0)
 
-        # 2) 亮边浮雕：剪影向迎光面偏移后叠一层近白，形成 1px 体积描边
-        draw_one(sil, 0.10, -1.2 - lx * 2.0, -1.2 - ly * 2.0)
+        # 2) 亮边浮雕：两层剪影错位叠加 —— 外层宽而淡、内层窄而亮，
+        #    迎光面形成由柔到硬的体积高光边（单层会像"贴纸描边"）
+        draw_one(sil, 0.07, -2.4 - lx * 3.2, -2.4 - ly * 3.2)
+        draw_one(sil, 0.12, -1.0 - lx * 1.6, -1.0 - ly * 1.6)
 
         # 3) 本体
         draw_one(frame, 1.0)
 
-        # 3.5) 跳跃运动残影：单帧跳跃没有腿部重影问题，用两层低透明度拖尾表现速度
+        # 3.5) 跳跃运动残影：按竖直速度调制（起跳/下落最快、顶点几乎无残影），
+        #      避免在最高点拖出一条压到窗口底边的重影
         if self._state == "jump" and 0.12 < self._jump_phase < 0.92:
-            draw_one(frame, 0.16, 0.0, 13.0)
-            draw_one(frame, 0.08, 0.0, 25.0)
+            speed = abs(math.cos(math.pi * self._jump_phase))
+            draw_one(frame, 0.18 * speed, 0.0, 12.0 * speed)
+            draw_one(frame, 0.10 * speed, 0.0, 24.0 * speed)
 
         # 4) 方向性环境光：迎光面亮、背光面偏冷紫暗部（只在角色像素内部着色）
         painter.setCompositionMode(QPainter.CompositionMode_SourceAtop)
@@ -1036,6 +1099,13 @@ class DesktopPet(QWidget):
         spec.setColorAt(0.55, QColor(255, 255, 255, 10))
         spec.setColorAt(1.0, QColor(255, 255, 255, 0))
         painter.setBrush(spec)
+        painter.drawRect(0, 0, w, h)
+
+        # 6) 底部接触暗部：脚踝/裙摆附近压一层极淡的暗色，脚尖更"踩得住"
+        ao = QLinearGradient(0, h * 0.78, 0, h)
+        ao.setColorAt(0.0, QColor(40, 22, 34, 0))
+        ao.setColorAt(1.0, QColor(40, 22, 34, 20))
+        painter.setBrush(ao)
         painter.drawRect(0, 0, w, h)
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.end()
