@@ -313,9 +313,11 @@ class DesktopPet(QWidget):
     TICK_MS = 16             # 动画刷新间隔（毫秒，60fps）
     DISPLAY_H = 228          # 角色显示高度（像素，高分屏自适应）
     # 待机：呼吸/浮动（速度按 tick 换算，已随 60fps 重新标定）
-    BOB_AMP = 4
-    BOB_SPEED = 0.068        # rad/tick ≈ 4.2 rad/s
-    BREATH_SPEED = 0.146
+    BOB_AMP = 2
+    BOB_SPEED = 0.032        # rad/tick ≈ 2.0 rad/s（约 3.1s 一次浮动）
+    # 呼吸：周期约 3.4s。旧值 0.146 rad/tick 相当于 1.4Hz，站着不动时
+    # 胸口/头顶以每秒 1.4 次、约 4px 的幅度起伏，观感就是"快速上下抖动"
+    BREATH_SPEED = 0.030
     BREATH_AMP = 0.024
     # 行走：4 拍循环（触地 → 经过 → 触地 → 经过）
     # 不用帧间交叉淡化：两张不同腿位半透明叠加会短暂出现"四条腿/交叉腿"，
@@ -327,9 +329,10 @@ class DesktopPet(QWidget):
     # 一拍的位移。原为 8px，换算下来每秒要换 6~7 次步，
     # 起伏频率高得像原地抽搐；拉长到 16px，步频回到每秒 3 步左右
     FRAME_STEP_PX = 16.0
-    WALK_BOB_AMP = 2         # 每拍起伏幅度（像素），步频降下来后 2px 已够
-    WALK_LEAN_AMP = 2.5      # 重心左右摆动幅度（像素）
-    BOB_EASE = 0.28          # 纵向起伏缓动：状态切换时不"跳一下"（防抖）
+    WALK_BOB_AMP = 1.5       # 每拍起伏幅度（像素），步频降下来后 1.5px 已够
+    WALK_LEAN_AMP = 1.6      # 重心左右摆动幅度（像素）
+    BOB_EASE = 0.25          # 纵向起伏跟随系数
+    BOB_TARGET_EASE = 0.12   # 起伏目标本身的平滑系数（目标阶跃也不会顿一下）
     SWAY_MAX = 5.0           # 头发/裙摆的滞后摆动最大偏移（像素）
     MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
     MASK_VPAD = 10           # 掩码纵向膨胀：氛围光晕在头顶/脚下发光，不膨胀会被硬裁掉
@@ -431,6 +434,9 @@ class DesktopPet(QWidget):
         self._gaze = 0.0             # 视线偏移（缓动后）
         self._pose_pop = 0.0         # 换姿势/停步时的弹性挤压（0..1）
         self._bob_y = 0.0            # 当前纵向起伏偏移（像素，已缓动）
+        self._bob_target = 0.0       # 起伏目标（再做一次平滑，杜绝目标阶跃）
+        self._bob_state = "idle"     # 上一 tick 的运动状态，用于相位对齐
+        self._idle_bob_phase = 0.0   # 待机浮动的正弦相位（进入待机时对齐当前高度）
         self._turn = 0.0             # 转身挤压（0..1）：横向压扁再回弹，模拟绕竖轴转身
         self._last_face = 1
         self._sway = 0.0             # 头发/裙摆滞后偏移（2.5D 形变用）
@@ -787,8 +793,8 @@ class DesktopPet(QWidget):
         elif self._state == "idle":
             # 待机时靠呼吸带动上半身极慢地晃，避免站着像一张静止贴纸；
             # 再叠一层几秒周期的左右重心转移，人才会"自己站着"而不是定住
-            sway_target += math.sin(self._t * self.BOB_SPEED * 0.8) * 1.3
-            sway_target += math.sin(self._t * 0.021) * 1.5
+            sway_target += math.sin(self._t * self.BOB_SPEED * 0.8) * 0.9
+            sway_target += math.sin(self._t * 0.021) * 1.2
         sway_target = max(-self.SWAY_MAX, min(self.SWAY_MAX, sway_target))
         self._sway += (sway_target - self._sway) * 0.14
 
@@ -807,14 +813,23 @@ class DesktopPet(QWidget):
         if self._state == "walk":
             self._frame_elapsed += self.TICK_MS
 
-        # 纵向起伏：走路跟拍、待机跟呼吸，统一走一遍缓动。
-        # 直接按状态公式取整会产生"切状态跳一下"的位移突变，缓动后看不出来。
+        # 纵向起伏：走路跟拍、待机跟呼吸。
+        # 待机正弦用独立相位，进入待机时先把相位对齐到当前高度：
+        # 旧写法 sin(绝对时间) 会在停下瞬间把目标甩到 ±4px 内的任意值，
+        # 之后再怎么缓动都是 80ms 内弹一下 —— 这正是"停一步抖一下"的来源。
         if self._state == "walk":
             p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
             bob_target = -abs(math.sin(math.pi * p)) * self.WALK_BOB_AMP
         else:
-            bob_target = math.sin(self._t * self.BOB_SPEED) * self.BOB_AMP
-        self._bob_y += (bob_target - self._bob_y) * self.BOB_EASE
+            if self._bob_state == "walk":
+                ratio = max(-1.0, min(1.0, self._bob_y / float(self.BOB_AMP)))
+                self._idle_bob_phase = math.asin(ratio)
+            self._idle_bob_phase += self.BOB_SPEED
+            bob_target = math.sin(self._idle_bob_phase) * self.BOB_AMP
+        self._bob_state = self._state
+        # 先把目标本身抹平，再让高度跟随：任何阶跃都变成 S 形过渡
+        self._bob_target += (bob_target - self._bob_target) * self.BOB_TARGET_EASE
+        self._bob_y += (self._bob_target - self._bob_y) * self.BOB_EASE
 
         # 跳跃进度
         if self._state == "jump":
@@ -850,6 +865,10 @@ class DesktopPet(QWidget):
                 self._state = "walk"
                 self._face = self._patrol_dir
         elif self._state != "jump":
+            # 目标先夹在活动范围内：否则到了边界会在原地一直迈步（看着像抽搐）
+            left, right, _, _ = self._allowed_region()
+            ax = self._base_pos[0]
+            self._target_dx = float(max(left - ax, min(right - ax, self._target_dx)))
             dx = self._wander
             if abs(self._target_dx - dx) <= self.WANDER_STEP:
                 self._wander = float(self._target_dx)
@@ -1060,13 +1079,13 @@ class DesktopPet(QWidget):
 
         # 行走：每拍落地压缩（承重下沉）+ 重心摆动 + 轻微侧倾
         lean = 0.0
-        rot = self._breath * 6.0      # 待机时随呼吸极轻微摆动（不到 1 度）
+        rot = self._breath * 3.0      # 待机时随呼吸极轻微摆动（不到 0.1 度）
         if self._state == "walk":
             p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
             step = self.WALK_ORDER[self._walk_idx]
             direction = -1.0 if step == 1 else (1.0 if step == 2 else 0.0)
             lean = math.sin(math.pi * p) * self.WALK_LEAN_AMP * direction
-            rot = math.sin(math.pi * p) * 1.8 * direction   # 绕脚底侧倾 → 重心感
+            rot = math.sin(math.pi * p) * 0.6 * direction   # 绕脚底侧倾 → 重心感
             squash = self.WALK_SQUASH[self._walk_idx]
             if squash:
                 sy *= 1.0 - squash
