@@ -95,6 +95,41 @@ def _daily_phrase() -> str:
     return random.choice(REMIND_TEXTS)
 
 
+# 简单句模板：把当前展示的单词嵌进一句浅显易懂的英语
+WORD_SENTENCE_TEMPLATES = (
+    'I learned the word "{w}" today.',
+    'Do you know what "{w}" means?',
+    'Can you make a sentence with "{w}"?',
+    'Let\'s practise "{w}" together!',
+    'Try to remember "{w}" today!',
+    'I saw "{w}" in my reading today.',
+    'Say "{w}" out loud with me!',
+    '"{w}" is on my word list.',
+)
+
+_last_sentence = [""]   # 上一句，避免气泡连续说同一句
+
+
+def _word_sentence(row: dict) -> str:
+    """把当前单词嵌进一句简单的英语句子
+
+    优先用词库自带的英文例句（本身就含该词，最自然），
+    没有例句或例句不含该词时套用简单模板；不连续重复同一句。
+    """
+    word = ((row or {}).get("word") or "").strip()
+    if not word:
+        return ""
+    pool = []
+    example = ((row or {}).get("example") or "").strip()
+    if example and word.lower() in example.lower():
+        pool.append(example)
+    pool.extend(t.format(w=word) for t in WORD_SENTENCE_TEMPLATES)
+    choices = [s for s in pool if s != _last_sentence[0]] or pool
+    sentence = random.choice(choices)
+    _last_sentence[0] = sentence
+    return sentence
+
+
 class _GroundShadow(QWidget):
     """地面软阴影：随跳跃高度缩小变淡，制造深度感
 
@@ -1144,12 +1179,16 @@ class DesktopPet(QWidget):
     # 说话（日常话语）
     # ------------------------------------------------------------------ #
     def show_bubble(self, text: str = None) -> None:
-        """在宠物头顶弹出带尾巴的气泡（1.8 秒后自动消失）
+        """在宠物头顶弹出带尾巴的气泡（约 2.6 秒后自动消失）
 
-        默认说一句「日常话语」：按时段问好 / 催促背单词 / 可爱闲聊。
+        默认说一句含「当前展示单词」的简单英语句子；词库为空时才退回
+        按时段的日常话语。
         """
         if text is None:
-            text = _daily_phrase()
+            row = self._panel.current_word_row() if self._panel else None
+            text = _word_sentence(row) if row else ""
+            if not text:
+                text = _daily_phrase()
         scr = self._screen()
         ag = scr.availableGeometry() if scr is not None else None
         tail_down = True
@@ -1174,7 +1213,7 @@ class DesktopPet(QWidget):
         self._bubble.show()
         self._bubble.raise_()
         self._bubble.float_in()
-        QTimer.singleShot(1800, self._bubble.hide)
+        QTimer.singleShot(2600, self._bubble.hide)
 
     def contextMenuEvent(self, event) -> None:
         menu = QMenu(self)
