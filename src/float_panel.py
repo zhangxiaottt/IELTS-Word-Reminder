@@ -144,7 +144,7 @@ class BackgroundCard(QWidget):
     WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
     BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
     STAR_COUNT = 200       # 火山喷出的星星总量（同时铺满屋顶与墙面）
-    STAR_PERIOD = 5.0      # 一颗星星从喷出到墙角消失的周期（秒）
+    STAR_PERIOD = 8.5      # 一颗星星从喷出到墙角消失的周期（秒），慢到"缓缓流淌"
     STAR_COLORS = (        # 五颜六色的星星：金/粉/蓝/紫/薄荷/橘
         "#FFD84D", "#FF6FA5", "#6FC7FF",
         "#B58CFF", "#6FE7B0", "#FF9A52",
@@ -478,28 +478,28 @@ class BackgroundCard(QWidget):
         eave_y = roof_h + 2.0
 
         if ph < 0.18:
-            # 喷出：猛地冲起，越接近顶点越慢（火山喷发初速）
+            # 喷出：缓缓冒起，越接近顶点越慢（不再"噗"地猛冲）
             t = ph / 0.18
-            e = 1.0 - (1.0 - t) ** 2.6
+            e = 1.0 - (1.0 - t) ** 1.7
             return (mouth_x + (apex_x - mouth_x) * e,
                     mouth_y + (apex_y - mouth_y) * e)
         if ph < 0.40:
-            # 坠落：重力加速砸向屋顶
+            # 坠落：重力略加速砸向屋顶（比自由落体柔和）
             t = (ph - 0.18) / 0.22
-            e = t ** 1.7
+            e = t ** 1.35
             return (apex_x + (drop_x - apex_x) * e,
                     apex_y + (drop_y - apex_y) * e)
         if ph < 0.68:
-            # 沿屋顶坡面向屋檐滑落，贴着瓦面轻微摆动
+            # 沿屋顶坡面向屋檐滑落，贴着瓦面轻微摆动，速度接近匀速
             t = (ph - 0.40) / 0.28
-            e = t ** 1.6
+            e = t ** 1.18
             x = drop_x + (eave_x - drop_x) * e
             y = drop_y + (eave_y - drop_y) * e
             x += math.sin(t * math.pi + seed["wobble"]) * 1.2
             return (x, y)
         # 沿墙壁竖直流下，横向摆动逐渐收敛，直到墙角
         t = (ph - 0.68) / 0.32
-        e = t ** 1.15
+        e = t ** 1.05
         x = eave_x + math.sin(t * math.pi * 2.0 + seed["wobble"]) * 2.2 * (1.0 - t)
         y = eave_y + (floor_y - eave_y) * e
         return (x, y)
@@ -535,7 +535,7 @@ class BackgroundCard(QWidget):
             col = seed["color"]
 
             # 两段余晖拖尾：让星星有"流淌"的轨迹
-            for d, ta in ((0.024, 0.32), (0.050, 0.12)):
+            for d, ta in ((0.030, 0.32), (0.062, 0.12)):
                 if ph <= d:
                     continue
                 tx, ty = self._star_xy(seed, ph - d, geo)
