@@ -139,21 +139,21 @@ class BackgroundCard(QWidget):
     ROOF_RATIO = 0.32      # 屋顶高度占面板高度的比例（尖屋顶需要更多高度）
     ROOF_MIN = 40          # 屋顶最小高度（像素）
     ROOF_MAX = 96          # 屋顶最大高度（像素）
-    ROOF_RIDGE = 0.20      # 屋脊在屋顶区内的高度比例（留出冒烟空间）
+    ROOF_RIDGE = 0.20      # 屋脊在屋顶区内的高度比例（留出喷星空间）
     WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
     BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
-    SMOKE_PUFFS = 6        # 烟囱烟雾的团数
-    SMOKE_PERIOD = 2.6     # 每团烟雾从烟囱口飘散的周期（秒）
+    STAR_COUNT = 9         # 烟囱一次喷出的星星数量
+    STAR_PERIOD = 2.2      # 一颗星星从喷出到消失的周期（秒）
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self._bg_pixmap = None   # 原始背景图
         self._bg_scaled = None   # 按当前尺寸缩放后的缓存
         self._house_mode = True  # 是否绘制「房子样式」（默认开启）
-        self._smoke_t = 0.0      # 烟雾动画相位（秒）
-        self._smoke_timer = QTimer(self)
-        self._smoke_timer.setInterval(45)   # 约 22fps，只重绘烟囱口小区域
-        self._smoke_timer.timeout.connect(self._smoke_tick)
+        self._fx_t = 0.0         # 烟囱喷星动画相位（秒）
+        self._fx_timer = QTimer(self)
+        self._fx_timer.setInterval(45)   # 约 22fps，只重绘烟囱口小区域
+        self._fx_timer.timeout.connect(self._fx_tick)
         self.setMouseTracking(True)
 
     # ------------------------------------------------------------------ #
@@ -162,7 +162,7 @@ class BackgroundCard(QWidget):
     def set_house_mode(self, enabled: bool) -> None:
         """切换房子样式；关闭后回到普通白底/背景图样式"""
         self._house_mode = bool(enabled)
-        self._sync_smoke_timer()
+        self._sync_fx_timer()
         self.update()
 
     def house_enabled(self) -> bool:
@@ -173,38 +173,38 @@ class BackgroundCard(QWidget):
         """按当前高度计算屋顶高度（像素）"""
         return max(self.ROOF_MIN, min(self.ROOF_MAX, int(self.height() * self.ROOF_RATIO)))
 
-    def _sync_smoke_timer(self) -> None:
-        """只在房子样式且可见时跑烟雾动画，避免后台空转"""
+    def _sync_fx_timer(self) -> None:
+        """只在房子样式且可见时跑喷星动画，避免后台空转"""
         if self._house_mode and self.isVisible():
-            if not self._smoke_timer.isActive():
-                self._smoke_timer.start()
+            if not self._fx_timer.isActive():
+                self._fx_timer.start()
         else:
-            self._smoke_timer.stop()
+            self._fx_timer.stop()
 
-    def _smoke_tick(self) -> None:
-        """推进烟雾相位，只重绘烟囱周边小区域"""
-        self._smoke_t += self._smoke_timer.interval() / 1000.0
-        if self._smoke_t >= 1e6:
-            self._smoke_t -= 1e6
+    def _fx_tick(self) -> None:
+        """推进喷星相位，只重绘烟囱周边小区域"""
+        self._fx_t += self._fx_timer.interval() / 1000.0
+        if self._fx_t >= 1e6:
+            self._fx_t -= 1e6
         ch = self._chimney_rect()
         self.update(
-            QRectF(ch.x() - 12, 0, ch.width() + 90, ch.top() + 24).toAlignedRect()
+            QRectF(ch.x() - 12, 0, ch.width() + 105, ch.top() + 34).toAlignedRect()
         )
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self._sync_smoke_timer()
+        self._sync_fx_timer()
 
     def hideEvent(self, event) -> None:
-        self._smoke_timer.stop()
+        self._fx_timer.stop()
         super().hideEvent(event)
 
     def _roof_ridge_y(self, roof_h: float) -> float:
-        """屋脊高度：留出顶部空间给烟囱冒烟"""
+        """屋脊高度：留出顶部空间给烟囱喷星"""
         return roof_h * self.ROOF_RIDGE
 
     def _chimney_rect(self) -> QRectF:
-        """大烟囱的几何：立在屋顶右坡、靠右上角，并向上留出冒烟空间"""
+        """大烟囱的几何：立在屋顶右坡、靠右上角，并向上留出喷星空间"""
         W = float(self.width())
         roof_h = float(self.roof_height())
         cw = max(26.0, min(52.0, W * 0.13))
@@ -213,7 +213,7 @@ class BackgroundCard(QWidget):
         t = (cx - W / 2.0) / max(1.0, W - 2.0 - W / 2.0)
         slope_y = ridge_y + t * (roof_h - ridge_y)
         bottom = slope_y + roof_h * 0.16      # 底部埋进屋顶，看着是"插"在坡上
-        top = max(2.0, bottom - max(34.0, roof_h * 0.70))   # 顶部高出屋脊
+        top = max(2.0, bottom - max(30.0, roof_h * 0.56))   # 顶部高出屋脊，上方留出喷星空间
         return QRectF(cx - cw / 2.0, top, cw, bottom - top)
 
     def set_background(self, path: str) -> None:
@@ -383,8 +383,8 @@ class BackgroundCard(QWidget):
         painter.setBrush(QColor("#8C3F55"))
         painter.drawEllipse(QRectF(ch.x() + 7, ch.y() + 2.5,
                                    ch.width() - 14, 3.5))
-        # 飘出来的烟
-        self._draw_smoke(painter, ch)
+        # 喷出来的星星
+        self._draw_stars(painter, ch)
 
         # ---- 大窗户（文字区）：浅蓝玻璃 + 粉色窗框 + 窗台 ----
         wy = roof_h + 2
@@ -417,31 +417,55 @@ class BackgroundCard(QWidget):
         for fx in (8, 18, 28, W - 28, W - 18, W - 8):
             self._draw_flower(painter, fx, H - 5)
 
-    def _draw_smoke(self, painter: QPainter, ch: QRectF) -> None:
-        """烟囱冒出的烟：多团径向渐变烟团向上飘、向右散，越飘越大越淡
+    @staticmethod
+    def _star_polygon(cx: float, cy: float, outer: float, inner: float,
+                      rot: float) -> QPolygonF:
+        """生成一个四角星多边形（outer 尖角半径、inner 内凹半径、rot 旋转角）"""
+        pts = []
+        for k in range(8):
+            ang = rot + k * math.pi / 4.0
+            rad = outer if k % 2 == 0 else inner
+            pts.append(QPointF(cx + math.cos(ang) * rad, cy + math.sin(ang) * rad))
+        return QPolygonF(pts)
 
-        动画相位由 _smoke_timer 推进；每团烟按固定周期循环，
+    def _draw_stars(self, painter: QPainter, ch: QRectF) -> None:
+        """烟囱喷星星：金色小星星从烟囱口弹出，向上偏右飞散、边转边淡出
+
+        动画相位由 _fx_timer 推进；每颗星按固定周期循环，
         这样只需重绘烟囱附近的小区域，开销很小。
         """
-        mouth_x = ch.center().x()
-        mouth_y = ch.top() + 2.0
-        rise = max(10.0, min(18.0, ch.top() + 2.0))  # 上升高度（不出窗口顶部）
-        drift = max(22.0, ch.width() * 0.55)         # 向右飘散距离
-        painter.setPen(Qt.NoPen)
-        for i in range(self.SMOKE_PUFFS):
-            ph = (self._smoke_t / self.SMOKE_PERIOD + i / float(self.SMOKE_PUFFS)) % 1.0
-            px = mouth_x + ph * drift + math.sin(ph * 3.2 + i * 0.9) * 3.5
-            py = mouth_y - ph * rise
-            r = 4.0 + ph * max(8.0, ch.width() * 0.26)
-            a = int(190 * (1.0 - ph) ** 0.9)
+        mouth_x = ch.center().x() + ch.width() * 0.05
+        mouth_y = ch.top() + 3.0
+        rise = max(10.0, min(16.0, ch.top() + 2.0))   # 喷出高度（不冲出窗口顶部）
+        drift = max(28.0, ch.width() * 0.85)          # 向右飞散距离
+        colors = (
+            QColor("#FFF3B8"), QColor("#FFD86B"),
+            QColor("#FFB7CE"), QColor("#FFFFFF"),
+        )
+        for i in range(self.STAR_COUNT):
+            ph = (self._fx_t / self.STAR_PERIOD + i / float(self.STAR_COUNT)) % 1.0
+            ease = 1.0 - (1.0 - ph) ** 1.8            # 刚喷出时快，随后减速
+            px = mouth_x + ease * drift + math.sin(ph * 5.0 + i * 1.3) * 3.0
+            py = mouth_y - ease * rise
+            a = int(215 * (1.0 - ph) ** 0.8)
             if a <= 3:
                 continue
-            grad = QRadialGradient(QPointF(px, py), r)
-            grad.setColorAt(0.0, QColor(255, 255, 255, a))
-            grad.setColorAt(0.45, QColor(198, 191, 207, int(a * 0.95)))
-            grad.setColorAt(1.0, QColor(190, 183, 200, 0))
-            painter.setBrush(grad)
-            painter.drawEllipse(QPointF(px, py), r, r)
+            r = 2.2 + 2.6 * math.sin(math.pi * ph)    # 先变大再变小
+            col = colors[i % len(colors)]
+            # 柔光晕：让星星在深色/浅色桌面上都亮得起来
+            gc = QColor(col)
+            gc.setAlpha(int(a * 0.45))
+            glow = QRadialGradient(QPointF(px, py), r * 2.4)
+            glow.setColorAt(0.0, gc)
+            glow.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(glow)
+            painter.drawEllipse(QPointF(px, py), r * 2.4, r * 2.4)
+            # 四角星本体
+            star = self._star_polygon(px, py, r * 1.9, r * 0.62,
+                                      math.radians(ph * 160 + i * 40))
+            painter.setBrush(col)
+            painter.drawPolygon(star)
 
     @staticmethod
     def _draw_heart(painter: QPainter, cx: float, cy: float, s: float, color: QColor) -> None:
