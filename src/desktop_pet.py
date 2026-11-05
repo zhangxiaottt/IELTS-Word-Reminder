@@ -36,7 +36,7 @@ from .utils import get_asset_path
 SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
 SPRITE_BLINK = "pets/pet_1_blink.png"   # 闭眼（眨眼）帧
 # 走路迈步帧（左右腿交替前迈，已按脚底/中心/体型对齐）
-# 站姿用 walk_base，与迈步帧拼成 6 拍循环：左迈 → 承重 → 站姿 → 右迈 → 承重 → 站姿
+# 站姿用 walk_base，与迈步帧拼成 4 拍循环：左迈 → 经过 → 右迈 → 经过
 # 原先的 walk_1（跨步过大）/ walk_2（双腿交叉）已弃用，不再引用
 SPRITE_WALK = ("pets/walk_left.png", "pets/walk_right.png")
 # 待机小动作为从精灵表切分出来的 4 个 pose：挥手 / 叉腰 / 捧脸 / 闭眼放松
@@ -267,41 +267,39 @@ class _SpeechBubble(QWidget):
 class DesktopPet(QWidget):
     """桌面小宠（状态机 + 程序化多动作）"""
 
-    TICK_MS = 33             # 动画刷新间隔（毫秒）
+    TICK_MS = 16             # 动画刷新间隔（毫秒，60fps）
     DISPLAY_H = 228          # 角色显示高度（像素，高分屏自适应）
-    # 待机：呼吸/浮动
-    BOB_AMP = 5
-    BOB_SPEED = 0.14
-    BREATH_SPEED = 0.30
-    BREATH_AMP = 0.035
-    # 行走：6 拍迈步循环（接触 → 承重下沉 → 经过），靠形变做重量感
+    # 待机：呼吸/浮动（速度按 tick 换算，已随 60fps 重新标定）
+    BOB_AMP = 4
+    BOB_SPEED = 0.068        # rad/tick ≈ 4.2 rad/s
+    BREATH_SPEED = 0.146
+    BREATH_AMP = 0.024
+    # 行走：4 拍循环（触地 → 经过 → 触地 → 经过）
     # 不用帧间交叉淡化：两张不同腿位半透明叠加会短暂出现"四条腿/交叉腿"，
     # 这正是旧版被嫌"摆腿奇怪"的观感来源；改为每拍落地压缩一下代替。
-    WALK_FRAME_MS = 150      # 每拍间隔（毫秒），6 拍一轮约 0.9s
-    # 1=左腿前迈帧，2=右腿前迈帧，0=站姿（经过帧）
-    WALK_ORDER = (1, 1, 0, 2, 2, 0)
-    # 每拍的额外纵向压缩：迈步接触后承重下沉，经过帧回弹
-    WALK_SQUASH = (0.0, 0.030, 0.012, 0.0, 0.030, 0.012)
+    # 索引含义与 _walk_frames 对应：0=站姿(经过帧) 1=左腿前迈 2=右腿前迈
+    WALK_ORDER = (1, 0, 2, 0)
+    # 每拍的额外纵向压缩：触地拍承重下沉，经过拍回弹
+    WALK_SQUASH = (0.018, 0.0, 0.018, 0.0)
+    FRAME_STEP_PX = 8.0      # 一拍对应的地面位移，用于把换帧节奏和移动速度锁死（防滑步）
     WALK_BOB_AMP = 3         # 每拍起伏幅度（像素）
-    WALK_LEAN_AMP = 2        # 重心左右摆动幅度（像素）
+    WALK_LEAN_AMP = 2.5      # 重心左右摆动幅度（像素）
     MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
     SHADOW_DX = 2            # 角色自阴影右下偏移
     SHADOW_DY = 3
-    SHADOW_ALPHA = 0.12      # 自阴影不透明度（过重会把角色压成灰边），避免重心偏差/阴影被裁切
-    SHADOW_DX = 2            # 角色自阴影右下偏移
-    SHADOW_DY = 3
     SHADOW_ALPHA = 0.12      # 自阴影不透明度（过重会把角色压成灰边）
-    WANDER_STEP = 1.2
+    WANDER_STEP = 0.85       # 像素/tick（约 53 px/s）
     # 巡逻模式：沿屏幕底部自己来回走，用侧身帧
-    PATROL_SPEED = 1.6       # 像素/tick（约 48 px/s）
-    PATROL_FRAME_MS = 180     # 侧身换帧间隔
+    PATROL_SPEED = 1.0       # 像素/tick（约 63 px/s）
+    PATROL_FRAME_STEP_PX = 9.0   # 侧身一拍的位移，同样用于锁节奏
     # 跳跃：抛物线 + 挤压/拉伸
     JUMP_H = 72
-    JUMP_TICKS = 44
+    JUMP_TICKS = 44          # 44 tick × 16ms ≈ 0.7s
     LAND_SQUASH = 0.12       # 落地挤压幅度（比例）
     # 反应性视线（光标靠近时侧身）
     GAZE_RADIUS = 240        # 光标在此半径内才反应（像素）
     GAZE_AMP = 8             # 最大侧身偏移（像素）
+    GAZE_EASE = 0.18         # 视线缓动系数（越小越柔和）
     MASK_ALPHA = 40
     CLICK_MOVE = 5           # 超过该位移视为拖拽（否则视为点击）
 
@@ -344,15 +342,26 @@ class DesktopPet(QWidget):
             "stand": QPixmap(get_asset_path("pets/side_stand_r.png")),
             "walk":  QPixmap(get_asset_path("pets/side_walk_r.png")),
         }
+        # 站姿（经过帧）：优先用专门的 walk_base，缺失时退回睁眼帧
+        _wbase = QPixmap(get_asset_path("pets/walk_base.png"))
+        if _wbase.isNull():
+            _wbase = self._open_pixmap
+        if len(self._walk_pixmaps) < 2:
+            self._walk_pixmaps = [self._open_pixmap, self._open_pixmap]
+        # 行走帧池（含经过帧）：0=经过 1=左迈 2=右迈
+        self._walk_pixmaps = list(self._walk_pixmaps[:2]) + [_wbase]
+        self._walk_frames = [_wbase, self._walk_pixmaps[0], self._walk_pixmaps[1]]
         self._walk_idx = 0
         self._pixmap = self._open_pixmap
-        # 6 拍循环用帧池：0=站姿，1=左迈，2=右迈
-        self._walk_frames = [self._open_pixmap]
-        self._walk_frames.extend(self._walk_pixmaps[:2])
-        while len(self._walk_frames) < 3:
-            self._walk_frames.append(self._open_pixmap)
+        # 待机基准帧（可能是某个小 pose，眨眼/恢复都回到它）
+        self._idle_frame = self._open_pixmap
         # 换帧只替换贴图，不叠加半透明混合（避免双腿重影）
         self._frame_elapsed = 0.0
+        self._walk_interval = 150.0
+        # 预缩放缓存：1024 原图 → 屏幕逻辑尺寸(+DPR)，每帧不再重复缩放
+        self._dpr = QApplication.primaryScreen().devicePixelRatio() if \
+            QApplication.primaryScreen() is not None else 1.0
+        self._scale_cache = {}
         # 剪影缓存（角色自阴影用）：cacheKey -> QPixmap
         self._sil_cache = {}
         self.setFixedSize(self.DISPLAY_H, self.DISPLAY_H)
@@ -370,6 +379,10 @@ class DesktopPet(QWidget):
         self._land_squash = 0.0      # 落地挤压衰减（0..1）
         self._stretch = 0.0          # 伸懒腰幅度（0..1）
         self._breath = 0.0
+        self._gaze = 0.0             # 视线偏移（缓动后）
+        self._pose_pop = 0.0         # 换姿势/停步时的弹性挤压（0..1）
+        self._turn = 0.0             # 转身挤压（0..1）：横向压扁再回弹，模拟绕竖轴转身
+        self._last_face = 1
         self._base_pos = (0, 0)
         self._dragging = False
         self._drag_press_global = None
@@ -398,7 +411,7 @@ class DesktopPet(QWidget):
         # 走路帧循环定时器（走路时切换迈步帧）
         self._walk_timer = QTimer(self)
         self._walk_timer.timeout.connect(self._advance_walk)
-        self._walk_timer.setInterval(self.WALK_FRAME_MS)
+        self._walk_timer.setInterval(self._beat_interval())
 
         self._stretch_timer = QTimer(self)
         self._stretch_timer.timeout.connect(self._start_stretch)
@@ -558,22 +571,35 @@ class DesktopPet(QWidget):
     # 动画：状态机
     # ------------------------------------------------------------------ #
     def _do_blink(self) -> None:
-        if not self.isVisible() or self._state == "walk":
+        """眨眼：随机闭合时长 + 25% 连眨两下，且不打断当前待机 pose"""
+        if not self.isVisible() or self._state != "idle" or self._dragging:
+            self._blink_timer.start(random.randint(2200, 4200))
             return
         self._pixmap = self._blink_pixmap
         self.update()
-        QTimer.singleShot(140, self._end_blink)
+        close_ms = random.randint(80, 130)
+        QTimer.singleShot(close_ms, self._end_blink)
+        if random.random() < 0.25:
+            QTimer.singleShot(close_ms + random.randint(60, 110), self._second_blink)
         self._blink_timer.start(random.randint(2200, 4200))
 
+    def _second_blink(self) -> None:
+        """连眨的第二下（只在仍待机时生效）"""
+        if self.isVisible() and self._state == "idle":
+            self._pixmap = self._blink_pixmap
+            self.update()
+            QTimer.singleShot(random.randint(70, 110), self._end_blink)
+
     def _end_blink(self) -> None:
-        self._pixmap = self._open_pixmap
+        # 回到「当前待机基准帧」而不是固定的睁眼帧，避免把 pose 吃掉
+        self._pixmap = self._idle_frame
         self.update()
 
     def _advance_walk(self) -> None:
         """走路帧循环
 
-        - dock/free 模式：正面 6 拍（左迈 → 承重 → 站姿 → 右迈 → 承重 → 站姿）
-        - patrol 模式：侧身 2 拍（stand → walk 交替），根据朝向选左/右侧身
+        - dock/free 模式：正面 4 拍（左迈 → 经过 → 右迈 → 经过）
+        - patrol 模式：侧身 2 拍（stand → walk 交替），根据朝向翻转
         """
         if self._state != "walk":
             self._walk_timer.stop()
@@ -588,14 +614,24 @@ class DesktopPet(QWidget):
         self._frame_elapsed = 0.0
         self.update()
 
+    def _beat_interval(self) -> int:
+        """按「一拍位移 ÷ 移动速度」算出换帧间隔，让脚步和地面位移严格同步（防滑步）"""
+        if self._mode == "patrol":
+            speed, step = self.PATROL_SPEED, self.PATROL_FRAME_STEP_PX
+        else:
+            speed, step = self.WANDER_STEP, self.FRAME_STEP_PX
+        px_per_ms = max(0.001, speed / float(self.TICK_MS))
+        return int(max(90, min(300, step / px_per_ms)))
+
     def _reset_to_base_frame(self) -> None:
-        """离开走路状态时切回基准帧（patrol 模式用侧身站姿）"""
+        """离开走路状态时切回基准帧（patrol 模式用侧身站姿，其余回当前待机帧）"""
         if self._mode == "patrol":
             target = self._side_frames["stand"]
         else:
-            target = self._open_pixmap
+            target = self._idle_frame
         if self._pixmap is not target:
             self._pixmap = target
+            self._pose_pop = max(self._pose_pop, 0.55)   # 停步时轻微回弹，避免硬切
             self.update()
 
     def _start_stretch(self) -> None:
@@ -607,7 +643,9 @@ class DesktopPet(QWidget):
     def _maybe_switch_pose(self) -> None:
         """待机时随机摆一个小 pose（挥手/叉腰/捧脸/闭眼），几秒后回站姿"""
         if self.isVisible() and self._state == "idle" and self._idle_pixmaps and self._mode != "patrol":
-            self._pixmap = random.choice(self._idle_pixmaps)
+            self._idle_frame = random.choice(self._idle_pixmaps)
+            self._pixmap = self._idle_frame
+            self._pose_pop = 1.0     # 换姿势时弹一下，掩盖帧之间的硬切
             self.update()
             # 4-6 秒后自动回到默认站姿（由 singleShot 触发）
             QTimer.singleShot(random.randint(4000, 6000), self._reset_idle_pose)
@@ -616,7 +654,9 @@ class DesktopPet(QWidget):
     def _reset_idle_pose(self) -> None:
         """从随机 pose 回到默认站姿（仅当仍处于 idle 时）"""
         if self._state == "idle":
+            self._idle_frame = self._open_pixmap
             self._pixmap = self._open_pixmap
+            self._pose_pop = 0.8
             self.update()
 
     def _start_jump(self) -> None:
@@ -641,9 +681,22 @@ class DesktopPet(QWidget):
         # 呼吸 / 伸懒腰衰减
         self._breath = math.sin(self._t * self.BREATH_SPEED) * self.BREATH_AMP
         if self._stretch > 0:
-            self._stretch -= 0.004
+            self._stretch -= 0.008
             if self._stretch < 0:
                 self._stretch = 0
+        # 换姿势 / 停步的弹性挤压衰减
+        if self._pose_pop > 0:
+            self._pose_pop = max(0.0, self._pose_pop - 0.09)
+        # 转身挤压衰减（约 160ms 内横向压扁再回弹）
+        if self._turn > 0:
+            self._turn = max(0.0, self._turn - 0.09)
+
+        # 反应性视线：朝光标侧身，做缓动避免"瞬移"式跳变
+        rel = QCursor.pos().x() - (self.x() + self.width() / 2.0)
+        target_gaze = 0.0
+        if abs(rel) < self.GAZE_RADIUS:
+            target_gaze = (rel / float(self.GAZE_RADIUS)) * self.GAZE_AMP
+        self._gaze += (target_gaze - self._gaze) * self.GAZE_EASE
 
         # 当前拍内进度（驱动上下起伏与重心摆动）
         if self._state == "walk":
@@ -693,10 +746,17 @@ class DesktopPet(QWidget):
                 # 朝向：按移动方向翻转
                 self._face = 1 if self._target_dx >= self._wander else -1
 
+        # 朝向改变 → 触发一次转身挤压（视觉上像绕竖轴转过来，而不是瞬间镜像）
+        if self._face != self._last_face:
+            self._last_face = self._face
+            if self._state != "jump":
+                self._turn = 1.0
+
         # 走路帧管理：走路时启动迈步循环，否则恢复睁眼帧
         if self._state == "walk":
             if not self._walk_timer.isActive():
-                interval = self.PATROL_FRAME_MS if self._mode == "patrol" else self.WALK_FRAME_MS
+                interval = self._beat_interval()
+                self._walk_interval = float(interval)
                 self._walk_timer.setInterval(interval)
                 self._walk_timer.start()
                 # 进入走路立即切到迈步帧（不等定时器首次触发，反应更快）
@@ -726,10 +786,9 @@ class DesktopPet(QWidget):
             ))
         elif self._state == "walk":
             # 每拍独立起伏：脚步落地时最低、抬腿到中段最高，与换帧严格同步
-            p = min(1.0, self._frame_elapsed / float(self.WALK_FRAME_MS))
-            y = self._base_pos[1] + int(round(
-                -abs(math.sin(math.pi * p)) * self.WALK_BOB_AMP
-            ))
+            p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
+            amp = self.WALK_BOB_AMP
+            y = self._base_pos[1] + int(round(-abs(math.sin(math.pi * p)) * amp))
         else:
             y = self._base_pos[1] + int(round(
                 math.sin(self._t * self.BOB_SPEED) * self.BOB_AMP
@@ -759,44 +818,78 @@ class DesktopPet(QWidget):
             self._shadow.set_state(1.0, 150)
         self._shadow.show()
 
+    def _scaled(self, pm: QPixmap) -> QPixmap:
+        """取屏幕尺寸的预缩放帧（按 DPR 生成一次，之后每帧直接复用）
+
+        原实现每帧把 1024 原图缩放一次，60fps 下非常吃 CPU；
+        这里在首次使用时缩放到显示尺寸并缓存，绘制时零缩放开销。
+        """
+        if pm is None or pm.isNull():
+            return pm
+        dpr = self._dpr
+        size = int(round(self.DISPLAY_H * dpr))
+        key = (pm.cacheKey(), size)
+        hit = self._scale_cache.get(key)
+        if hit is not None:
+            return hit
+        sp = pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        sp.setDevicePixelRatio(dpr)
+        if len(self._scale_cache) > 64:
+            self._scale_cache.clear()
+        self._scale_cache[key] = sp
+        return sp
+
     def _silhouette(self, pm: QPixmap) -> QPixmap:
         """生成角色剪影（保留原 alpha、填充深色），用于角色自阴影
 
-        结果按 pixmap 缓存，避免每帧重复计算。
+        基于已缩放到显示尺寸的帧生成，避免每帧染一遍 1024 原图；
+        结果按 pixmap 缓存。
         """
-        key = (pm.cacheKey(), pm.width(), pm.height())
+        key = (pm.cacheKey(), pm.width())
         hit = self._sil_cache.get(key)
         if hit is not None:
             return hit
-        img = QImage(pm.size(), QImage.Format_ARGB32)
-        img.fill(Qt.transparent)
+        img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
         p = QPainter(img)
-        p.drawPixmap(0, 0, pm)
         # SourceIn：把不透明像素整体染成深色，保留原轮廓与抗锯齿边
         p.setCompositionMode(QPainter.CompositionMode_SourceIn)
         p.fillRect(img.rect(), QColor(46, 26, 40))
         p.end()
         sil = QPixmap.fromImage(img)
+        sil.setDevicePixelRatio(pm.devicePixelRatio())
+        if len(self._sil_cache) > 64:
+            self._sil_cache.clear()
         self._sil_cache[key] = sil
         return sil
 
     def paintEvent(self, event) -> None:
-        """绘制角色：自阴影 → 交叉淡化 → 左上环境光
+        """绘制角色：动态光源 + 边缘浮雕 + 方向性环境光 + 高光
 
-        三层叠加代替原来的"单张贴图硬画"，让平涂 Q 版角色有体积感。
+        「立体」不靠贴图，而靠逐帧光影：
+        1) 投影（随光源方向偏移）  2) 亮边浮雕（迎光面高光描边）
+        3) 本体                    4) 方向性环境光（迎光面亮、背光面暗）
+        5) 面部/肩部高光（随光标位置移动）
+        光源方向由光标位置驱动，转动视角时明暗随动，才有真正的体积感。
         """
         if self._pixmap.isNull():
             return
+
+        # 跨屏拖动导致 DPR 变化时，重建预缩放与剪影缓存
+        dpr = self.devicePixelRatioF() or 1.0
+        if abs(dpr - self._dpr) > 0.01:
+            self._dpr = dpr
+            self._scale_cache.clear()
+            self._sil_cache.clear()
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         w, h = self.width(), self.height()
+        frame = self._scaled(self._pixmap)
 
-        # 反应性视线：光标靠近时微微侧身（水平平移，不出掩码范围）
-        gaze = 0.0
+        # ---- 光源方向（-1..1）：光标在左则光从左来，投影向右 ----
         cur = QCursor.pos()
-        rel = cur.x() - (self.x() + w / 2.0)
-        if abs(rel) < self.GAZE_RADIUS:
-            gaze = (rel / self.GAZE_RADIUS) * self.GAZE_AMP
+        lx = max(-1.0, min(1.0, (cur.x() - (self.x() + w / 2.0)) / 420.0))
+        ly = max(-1.0, min(1.0, (cur.y() - (self.y() + h / 2.0)) / 420.0))
 
         # 纵向挤压/拉伸（脚底固定）
         if self._state == "jump":
@@ -821,51 +914,78 @@ class DesktopPet(QWidget):
             sy = 1.0 + self._breath + self._stretch
             sx = 1.0 - self._breath * 0.5 - self._stretch * 0.6
 
-        # 行走：每拍落地压缩（承重下沉）+ 重心左右摆动
+        # 换姿势/停步的弹性挤压（掩盖硬切）
+        if self._pose_pop > 0:
+            sy *= 1.0 - 0.05 * self._pose_pop
+            sx *= 1.0 + 0.06 * self._pose_pop
+        # 转身：横向压扁再回弹（绕竖轴旋转的透视错觉），压扁时略拉高
+        if self._turn > 0:
+            sx *= 1.0 - 0.45 * self._turn
+            sy *= 1.0 + 0.04 * self._turn
+
+        # 行走：每拍落地压缩（承重下沉）+ 重心摆动 + 轻微侧倾
         lean = 0.0
+        rot = self._breath * 6.0      # 待机时随呼吸极轻微摆动（不到 1 度）
         if self._state == "walk":
-            p = min(1.0, self._frame_elapsed / float(self.WALK_FRAME_MS))
+            p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
             step = self.WALK_ORDER[self._walk_idx]
             direction = -1.0 if step == 1 else (1.0 if step == 2 else 0.0)
             lean = math.sin(math.pi * p) * self.WALK_LEAN_AMP * direction
-            # 承重拍把身体轻轻下压、横向略展（脚底固定），做出踩地的重量
+            rot = math.sin(math.pi * p) * 1.8 * direction   # 绕脚底侧倾 → 重心感
             squash = self.WALK_SQUASH[self._walk_idx]
             if squash:
                 sy *= 1.0 - squash
                 sx *= 1.0 + squash * 1.4
+            if self._mode == "patrol":
+                lean = 2.0      # 侧身走持续前压
 
-        def draw_one(pm, opacity: float, shadow: bool = False) -> None:
-            """按当前变换绘制一帧（shadow=True 用剪影）"""
-            if pm is None or pm.isNull() or opacity <= 0.01:
+        def draw_one(target, opacity: float, dx: float = 0.0, dy: float = 0.0) -> None:
+            """按当前变换绘制一帧（target 为已预缩放的贴图或剪影）"""
+            if target is None or target.isNull() or opacity <= 0.01:
                 return
-            target = self._silhouette(pm) if shadow else pm
             painter.save()
             painter.setOpacity(opacity)
-            painter.translate(w / 2.0, h)
+            painter.translate(w / 2.0 + dx, h + dy)
+            painter.rotate(rot)
             painter.scale(sx, sy)
             if self._face < 0:
                 painter.scale(-1.0, 1.0)   # 朝左：水平翻转
-            painter.translate(-w / 2.0 + (gaze + lean) * self._face, -h)
-            painter.drawPixmap(0, 0, w, h, target)
+            painter.translate(-w / 2.0 + (self._gaze + lean) * self._face, -h)
+            painter.drawPixmap(0, 0, target)
             painter.restore()
 
-        # 1) 角色自阴影：向右下偏移的深色剪影，给平涂边缘压出厚度
-        painter.save()
-        painter.translate(self.SHADOW_DX, self.SHADOW_DY)
-        draw_one(self._pixmap, self.SHADOW_ALPHA, True)
-        painter.restore()
+        sil = self._silhouette(frame)
 
-        # 2) 角色本体：直接画当前帧（不做半透明叠加，避免双腿重影）
-        draw_one(self._pixmap, 1.0)
+        # 1) 投影：与光源反向偏移，光源在左时影子落向右下
+        draw_one(sil, self.SHADOW_ALPHA,
+                 self.SHADOW_DX - lx * 3.0, self.SHADOW_DY - ly * 2.0)
 
-        # 3) 环境光：左上高光、右下暗部，只在角色像素内部生效（SourceAtop）
+        # 2) 亮边浮雕：剪影向迎光面偏移后叠一层近白，形成 1px 体积描边
+        draw_one(sil, 0.10, -1.2 - lx * 2.0, -1.2 - ly * 2.0)
+
+        # 3) 本体
+        draw_one(frame, 1.0)
+
+        # 4) 方向性环境光：迎光面亮、背光面偏冷紫暗部（只在角色像素内部着色）
         painter.setCompositionMode(QPainter.CompositionMode_SourceAtop)
-        grad = QLinearGradient(0, h * 0.05, w, h)
-        grad.setColorAt(0.0, QColor(255, 255, 255, 26))
-        grad.setColorAt(0.42, QColor(255, 255, 255, 0))
-        grad.setColorAt(1.0, QColor(110, 70, 90, 30))
+        gx, gy = w * 0.5, h * 0.5
+        r = max(w, h) * 0.75
+        grad = QLinearGradient(gx - lx * r, gy - ly * r, gx + lx * r, gy + ly * r)
+        grad.setColorAt(0.0, QColor(255, 255, 255, 30))
+        grad.setColorAt(0.45, QColor(255, 255, 255, 0))
+        grad.setColorAt(1.0, QColor(104, 68, 96, 44))
         painter.setPen(Qt.NoPen)
         painter.setBrush(grad)
+        painter.drawRect(0, 0, w, h)
+
+        # 5) 高光：迎光面偏上的柔和光斑（脸部/发丝提亮，塑料/丝绸质感）
+        spec = QRadialGradient(
+            gx - lx * w * 0.20, h * 0.24 - ly * h * 0.10, w * 0.36
+        )
+        spec.setColorAt(0.0, QColor(255, 255, 255, 34))
+        spec.setColorAt(0.55, QColor(255, 255, 255, 10))
+        spec.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.setBrush(spec)
         painter.drawRect(0, 0, w, h)
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.end()
