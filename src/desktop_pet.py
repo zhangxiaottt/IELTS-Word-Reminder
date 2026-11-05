@@ -284,6 +284,8 @@ class DesktopPet(QWidget):
     FRAME_STEP_PX = 8.0      # 一拍对应的地面位移，用于把换帧节奏和移动速度锁死（防滑步）
     WALK_BOB_AMP = 3         # 每拍起伏幅度（像素）
     WALK_LEAN_AMP = 2.5      # 重心左右摆动幅度（像素）
+    WARP_STRIPS = 12         # 2.5D 视差形变的分条数（横向条带逐条偏移，头摆脚不动）
+    SWAY_MAX = 5.0           # 头发/裙摆的滞后摆动最大偏移（像素）
     MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
     SHADOW_DX = 2            # 角色自阴影右下偏移
     SHADOW_DY = 3
@@ -383,6 +385,7 @@ class DesktopPet(QWidget):
         self._pose_pop = 0.0         # 换姿势/停步时的弹性挤压（0..1）
         self._turn = 0.0             # 转身挤压（0..1）：横向压扁再回弹，模拟绕竖轴转身
         self._last_face = 1
+        self._sway = 0.0             # 头发/裙摆滞后偏移（2.5D 形变用）
         self._base_pos = (0, 0)
         self._dragging = False
         self._drag_press_global = None
@@ -690,6 +693,15 @@ class DesktopPet(QWidget):
         # 转身挤压衰减（约 160ms 内横向压扁再回弹）
         if self._turn > 0:
             self._turn = max(0.0, self._turn - 0.09)
+        # 头发/裙摆惯性：向移动的反方向滞后摆动（越靠上越明显，脚底不动）
+        sway_target = self._gaze * 0.5
+        if self._state == "walk":
+            sway_target += 2.2 * self._face
+        elif self._state == "idle":
+            # 待机时靠呼吸带动上半身极慢地晃，避免站着像一张静止贴纸
+            sway_target += math.sin(self._t * self.BOB_SPEED * 0.8) * 1.3
+        sway_target = max(-self.SWAY_MAX, min(self.SWAY_MAX, sway_target))
+        self._sway += (sway_target - self._sway) * 0.14
 
         # 反应性视线：朝光标侧身，做缓动避免"瞬移"式跳变
         rel = QCursor.pos().x() - (self.x() + self.width() / 2.0)
@@ -808,7 +820,9 @@ class DesktopPet(QWidget):
     def _update_shadow(self) -> None:
         """地面阴影跟随宠物水平位置，跳跃时缩小变淡"""
         ground_y = self._base_pos[1] + self.height() - 2
-        sx = self.x() + self.width() / 2.0 - self._shadow.width() / 2.0
+        # 阴影随光源反向偏移：身体左倾时影子略偏右，贴合方向光
+        sx = (self.x() + self.width() / 2.0 - self._shadow.width() / 2.0
+              - self._gaze * 0.6)
         sy = ground_y - self._shadow.height() + 3
         self._shadow.move(round(sx), round(sy))
         if self._state == "jump":
@@ -838,6 +852,28 @@ class DesktopPet(QWidget):
             self._scale_cache.clear()
         self._scale_cache[key] = sp
         return sp
+
+    def _draw_warped(self, painter, pm: QPixmap, w: float, h: float) -> None:
+        """2.5D 分层形变：把贴图切成横向条带，顶部随摆动偏移、脚底固定
+
+        平涂立绘按单张整体位移会像"整块纸片平移"，分条错位后头/上半身
+        有横向剪切，视觉上像有体积的身体在扭动，脚底仍然钉在地面。
+        """
+        sway = self._sway
+        if abs(sway) < 0.35:
+            painter.drawPixmap(0, 0, pm)
+            return
+        strips = self.WARP_STRIPS
+        sw, sh = pm.width(), pm.height()
+        band = h / float(strips)
+        for i in range(strips):
+            f = i / float(strips - 1)          # 0=头顶，1=脚底
+            dx = -sway * (1.0 - f)             # 越靠上偏移越大，脚底为 0
+            sy0 = sh * i / float(strips)
+            sy1 = sh * (i + 1) / float(strips)
+            painter.drawPixmap(
+                QRectF(dx, band * i, w, band), pm,
+                QRectF(0, sy0, sw, sy1 - sy0))
 
     def _silhouette(self, pm: QPixmap) -> QPixmap:
         """生成角色剪影（保留原 alpha、填充深色），用于角色自阴影
@@ -951,8 +987,17 @@ class DesktopPet(QWidget):
             if self._face < 0:
                 painter.scale(-1.0, 1.0)   # 朝左：水平翻转
             painter.translate(-w / 2.0 + (self._gaze + lean) * self._face, -h)
-            painter.drawPixmap(0, 0, target)
+            self._draw_warped(painter, target, w, h)
             painter.restore()
+
+        # 0) 背光氛围：角色后方一层暖色柔光，把它从桌面背景里"托"起来
+        glow = QRadialGradient(w * 0.5, h * 0.45, w * 0.62)
+        glow.setColorAt(0.0, QColor(255, 246, 238, 34))
+        glow.setColorAt(0.55, QColor(255, 238, 228, 14))
+        glow.setColorAt(1.0, QColor(255, 238, 228, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawRect(0, 0, w, h)
 
         sil = self._silhouette(frame)
 
@@ -965,6 +1010,11 @@ class DesktopPet(QWidget):
 
         # 3) 本体
         draw_one(frame, 1.0)
+
+        # 3.5) 跳跃运动残影：单帧跳跃没有腿部重影问题，用两层低透明度拖尾表现速度
+        if self._state == "jump" and 0.12 < self._jump_phase < 0.92:
+            draw_one(frame, 0.16, 0.0, 13.0)
+            draw_one(frame, 0.08, 0.0, 25.0)
 
         # 4) 方向性环境光：迎光面亮、背光面偏冷紫暗部（只在角色像素内部着色）
         painter.setCompositionMode(QPainter.CompositionMode_SourceAtop)
