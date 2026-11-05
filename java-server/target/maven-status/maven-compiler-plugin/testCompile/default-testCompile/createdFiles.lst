@@ -1,0 +1,5 @@
+com\ielts\reminder\LocalServerTest.class
+com\ielts\reminder\WordManagerTest.class
+com\ielts\reminder\ArticleGeneratorTest.class
+com\ielts\reminder\ConfigManagerTest.class
+com\ielts\reminder\DictAPITest.class

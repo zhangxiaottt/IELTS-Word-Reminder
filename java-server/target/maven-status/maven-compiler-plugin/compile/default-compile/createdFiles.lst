@@ -1,0 +1,9 @@
+com\ielts\reminder\config\ConfigManager.class
+com\ielts\reminder\data\WordManager.class
+com\ielts\reminder\article\ArticleGenerator.class
+com\ielts\reminder\server\LocalServer.class
+com\ielts\reminder\api\DictAPI.class
+com\ielts\reminder\server\Main.class
+com\ielts\reminder\api\LLMClient.class
+com\ielts\reminder\article\ArticleGenerator$PickResult.class
+com\ielts\reminder\config\ProjectPaths.class

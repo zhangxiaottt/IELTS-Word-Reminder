@@ -63,11 +63,11 @@ public class LocalServer {
         IOException last = null;
         for (int i = 0; i < 5; i++) {
             try {
-                server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
+                server = HttpServer.create(new InetSocketAddress("0.0.0.0", port), 0);
                 server.setExecutor(Executors.newFixedThreadPool(4));
                 server.createContext("/", this::dispatch);
                 server.start();
-                System.out.println("[LocalServer] 已启动: http://127.0.0.1:" + port);
+                System.out.println("[LocalServer] 已启动: http://0.0.0.0:" + port + " （局域网同 WiFi 设备可访问）");
                 return;
             } catch (IOException e) {
                 last = e;

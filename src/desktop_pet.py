@@ -25,8 +25,8 @@ import datetime
 
 from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF, QPropertyAnimation
 from PySide6.QtGui import (
-    QPixmap, QPainter, QRegion, QColor, QPen, QFont,
-    QPainterPath, QPolygonF, QRadialGradient, QCursor,
+    QPixmap, QPainter, QRegion, QColor, QPen, QFont, QImage,
+    QPainterPath, QPolygonF, QRadialGradient, QLinearGradient, QCursor,
 )
 from PySide6.QtWidgets import QApplication, QWidget, QMenu
 
@@ -35,8 +35,17 @@ from .utils import get_asset_path
 # 角色帧路径（透明 PNG）
 SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
 SPRITE_BLINK = "pets/pet_1_blink.png"   # 闭眼（眨眼）帧
-# 走路帧序列（同角色不同迈步姿态，已按脚底/中心/体型对齐）
-SPRITE_WALK = ("pets/walk_1.png", "pets/walk_2.png", "pets/walk_3.png")
+# 走路迈步帧（左右腿交替前迈，已按脚底/中心/体型对齐）
+# 站姿用 walk_base，与迈步帧拼成 6 拍循环：左迈 → 承重 → 站姿 → 右迈 → 承重 → 站姿
+# 原先的 walk_1（跨步过大）/ walk_2（双腿交叉）已弃用，不再引用
+SPRITE_WALK = ("pets/walk_left.png", "pets/walk_right.png")
+# 待机小动作为从精灵表切分出来的 4 个 pose：挥手 / 叉腰 / 捧脸 / 闭眼放松
+SPRITE_IDLE_POSES = (
+    "pets/idle_wave.png",
+    "pets/idle_hips.png",
+    "pets/idle_giggle.png",
+    "pets/idle_relax.png",
+)
 
 # 日常话语（按时段问好 + 催促背单词 + 可爱闲聊）
 MORNING_TEXTS = [
@@ -112,19 +121,34 @@ class _GroundShadow(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
+        """双层地面投影：外层柔和扩散影 + 内层接触硬影
+
+        单层椭圆像"贴纸浮在桌面"，加了紧贴脚底的接触影才有真正踩地的重量感。
+        """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         w = self.width() * self._scale
         h = 13 * self._scale
         x = (self.width() - w) / 2.0
         y = self.height() - h
-        rect = QRectF(x, y, w, h)
-        grad = QRadialGradient(x + w / 2.0, y + h / 2.0, max(w, h) / 2.0)
-        grad.setColorAt(0.0, QColor(0, 0, 0, self._alpha))
-        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
         painter.setPen(Qt.NoPen)
+
+        # 外层：大范围柔和扩散影
+        grad = QRadialGradient(x + w / 2.0, y + h / 2.0, max(w, h) / 2.0)
+        grad.setColorAt(0.0, QColor(0, 0, 0, int(self._alpha * 0.55)))
+        grad.setColorAt(1.0, QColor(0, 0, 0, 0))
         painter.setBrush(grad)
-        painter.drawEllipse(rect)
+        painter.drawEllipse(QRectF(x, y, w, h))
+
+        # 内层：紧贴脚底的接触硬影，锚定"踩在地上"
+        contact = QRectF(x + w * 0.22, y + h * 0.44, w * 0.56, h * 0.44)
+        grad2 = QRadialGradient(
+            contact.center(), max(contact.width(), contact.height()) / 2.0
+        )
+        grad2.setColorAt(0.0, QColor(35, 20, 30, min(210, self._alpha)))
+        grad2.setColorAt(1.0, QColor(35, 20, 30, 0))
+        painter.setBrush(grad2)
+        painter.drawEllipse(contact)
         painter.end()
 
 
@@ -250,12 +274,27 @@ class DesktopPet(QWidget):
     BOB_SPEED = 0.14
     BREATH_SPEED = 0.30
     BREATH_AMP = 0.035
-    # 行走：方向翻转 + 高频颠簸
-    WALK_FRAME_MS = 150      # 每帧间隔（毫秒）
-    WALK_CYCLE = (0, 1, 2, 1)  # 4 拍循环：右步→换步→左步→换步
-    WALK_BOB_AMP = 2
-    WALK_BOB_SPEED = 0.42
+    # 行走：6 拍迈步循环（接触 → 承重下沉 → 经过），靠形变做重量感
+    # 不用帧间交叉淡化：两张不同腿位半透明叠加会短暂出现"四条腿/交叉腿"，
+    # 这正是旧版被嫌"摆腿奇怪"的观感来源；改为每拍落地压缩一下代替。
+    WALK_FRAME_MS = 150      # 每拍间隔（毫秒），6 拍一轮约 0.9s
+    # 1=左腿前迈帧，2=右腿前迈帧，0=站姿（经过帧）
+    WALK_ORDER = (1, 1, 0, 2, 2, 0)
+    # 每拍的额外纵向压缩：迈步接触后承重下沉，经过帧回弹
+    WALK_SQUASH = (0.0, 0.030, 0.012, 0.0, 0.030, 0.012)
+    WALK_BOB_AMP = 3         # 每拍起伏幅度（像素）
+    WALK_LEAN_AMP = 2        # 重心左右摆动幅度（像素）
+    MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
+    SHADOW_DX = 2            # 角色自阴影右下偏移
+    SHADOW_DY = 3
+    SHADOW_ALPHA = 0.12      # 自阴影不透明度（过重会把角色压成灰边），避免重心偏差/阴影被裁切
+    SHADOW_DX = 2            # 角色自阴影右下偏移
+    SHADOW_DY = 3
+    SHADOW_ALPHA = 0.12      # 自阴影不透明度（过重会把角色压成灰边）
     WANDER_STEP = 1.2
+    # 巡逻模式：沿屏幕底部自己来回走，用侧身帧
+    PATROL_SPEED = 1.6       # 像素/tick（约 48 px/s）
+    PATROL_FRAME_MS = 180     # 侧身换帧间隔
     # 跳跃：抛物线 + 挤压/拉伸
     JUMP_H = 72
     JUMP_TICKS = 44
@@ -294,13 +333,34 @@ class DesktopPet(QWidget):
                 self._walk_pixmaps.append(_pm)
         if not self._walk_pixmaps:
             self._walk_pixmaps = [self._open_pixmap]
+        # 待机小 pose（挥手/叉腰/捧脸/闭眼），随机出现几秒
+        self._idle_pixmaps = []
+        for _p in SPRITE_IDLE_POSES:
+            _pm = QPixmap(get_asset_path(_p))
+            if not _pm.isNull():
+                self._idle_pixmaps.append(_pm)
+        # 侧身帧（巡逻模式用）：只载朝右版，朝左由 paintEvent 按 _face 水平翻转
+        self._side_frames = {
+            "stand": QPixmap(get_asset_path("pets/side_stand_r.png")),
+            "walk":  QPixmap(get_asset_path("pets/side_walk_r.png")),
+        }
         self._walk_idx = 0
         self._pixmap = self._open_pixmap
+        # 6 拍循环用帧池：0=站姿，1=左迈，2=右迈
+        self._walk_frames = [self._open_pixmap]
+        self._walk_frames.extend(self._walk_pixmaps[:2])
+        while len(self._walk_frames) < 3:
+            self._walk_frames.append(self._open_pixmap)
+        # 换帧只替换贴图，不叠加半透明混合（避免双腿重影）
+        self._frame_elapsed = 0.0
+        # 剪影缓存（角色自阴影用）：cacheKey -> QPixmap
+        self._sil_cache = {}
         self.setFixedSize(self.DISPLAY_H, self.DISPLAY_H)
         self._build_mask()
 
         # 状态机与动画状态
-        self._mode = "dock"          # dock=驻留面板 / free=自由活动
+        self._mode = "dock"          # dock=驻留面板 / free=落点附近 / patrol=沿屏幕底部来回走
+        self._patrol_dir = 1          # 巡逻方向：1=向右 / -1=向左
         self._state = "idle"         # idle / walk / jump / drag
         self._face = 1               # 朝向：1=右 / -1=左
         self._t = 0
@@ -344,6 +404,11 @@ class DesktopPet(QWidget):
         self._stretch_timer.timeout.connect(self._start_stretch)
         self._stretch_timer.start(random.randint(9000, 15000))
 
+        # 待机时随机摆一个 pose（挥手/叉腰/捧脸/闭眼），几秒后回到站姿
+        self._pose_timer = QTimer(self)
+        self._pose_timer.timeout.connect(self._maybe_switch_pose)
+        self._pose_timer.start(random.randint(14000, 24000))
+
         # 自动说话（日常话语）
         self._talk_timer = QTimer(self)
         self._talk_timer.timeout.connect(self._auto_talk)
@@ -352,28 +417,57 @@ class DesktopPet(QWidget):
     # ------------------------------------------------------------------ #
     # 掩码
     # ------------------------------------------------------------------ #
+    def _all_frames(self) -> list:
+        """所有会用到的动作帧（用于生成统一的窗口掩码）"""
+        frames = []
+        for pm in (self._open_pixmap, self._blink_pixmap):
+            if pm is not None and not pm.isNull():
+                frames.append(pm)
+        for pm in self._walk_pixmaps:
+            if pm is not None and not pm.isNull():
+                frames.append(pm)
+        for pm in self._idle_pixmaps:
+            if pm is not None and not pm.isNull():
+                frames.append(pm)
+        for pm in self._side_frames.values():
+            if pm is not None and not pm.isNull():
+                frames.append(pm)
+        return frames or [self._pixmap]
+
+    def _row_region(self, x0: int, x1: int, y: int, w: int) -> QRegion:
+        """单行不透明区间 + 左右膨胀（膨胀量不超过窗口边界）"""
+        left = max(0, x0 - self.MASK_PAD)
+        right = min(w - 1, x1 + self.MASK_PAD)
+        return QRegion(left, y, right - left + 1, 1)
+
     def _build_mask(self) -> None:
+        """按所有动作帧的透明轮廓并集生成窗口掩码，并向外膨胀 MASK_PAD
+
+        用并集而不是逐帧重建：换帧不再重算掩码（省开销、轮廓不抖），
+        膨胀后重心摆动 / 视线偏移 / 自阴影都不会被窗口裁切。
+        """
         if self._pixmap.isNull():
             self.clearMask()
             return
-        pm = self._pixmap.scaled(
-            self.width(), self.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        img = pm.toImage()
-        w, h = img.width(), img.height()
+        w, h = self.width(), self.height()
         region = QRegion()
-        for y in range(h):
-            x0 = -1
-            for x in range(w):
-                if QColor.fromRgba(img.pixel(x, y)).alpha() > self.MASK_ALPHA:
-                    if x0 < 0:
-                        x0 = x
-                else:
-                    if x0 >= 0:
-                        region = region.united(QRegion(x0, y, x - x0, 1))
-                        x0 = -1
-            if x0 >= 0:
-                region = region.united(QRegion(x0, y, w - x0, 1))
+        for pm in self._all_frames():
+            img = pm.scaled(
+                w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            ).toImage()
+            iw, ih = img.width(), img.height()
+            for y in range(ih):
+                x0 = -1
+                for x in range(iw):
+                    if QColor.fromRgba(img.pixel(x, y)).alpha() > self.MASK_ALPHA:
+                        if x0 < 0:
+                            x0 = x
+                    else:
+                        if x0 >= 0:
+                            region = region.united(self._row_region(x0, x - 1, y, w))
+                            x0 = -1
+                if x0 >= 0:
+                    region = region.united(self._row_region(x0, iw - 1, y, w))
         self.setMask(region)
 
     # ------------------------------------------------------------------ #
@@ -399,19 +493,49 @@ class DesktopPet(QWidget):
         self._mode = "dock"
         self.anchor()
 
+    def start_patrol(self) -> None:
+        """进入巡逻模式：脱离面板，沿屏幕底部自己来回走"""
+        scr = self._screen()
+        ag = scr.availableGeometry() if scr is not None else None
+        self._wander_timer.stop()
+        self._mode = "patrol"
+        self._patrol_dir = 1
+        self._face = 1
+        self._wander = 0.0
+        self._target_dx = 0
+        if ag is not None:
+            self._base_pos = (
+                self.x(),
+                ag.y() + ag.height() - self.height() - 4,
+            )
+        self._state = "idle"
+        self._apply_position(force=True)
+        self._update_shadow()
+
     def _screen(self):
         s = self.screen()
         return s if s else QApplication.primaryScreen()
 
     def _allowed_region(self) -> tuple:
         ax, ay = self._base_pos
+        scr = self._screen()
+        if self._mode == "patrol":
+            # 巡逻：y 固定贴屏幕底部，x 在全屏幕范围内
+            ag = scr.availableGeometry() if scr is not None else None
+            if ag is not None:
+                left = ag.x()
+                right = ag.x() + ag.width() - self.width()
+                bottom = ag.y() + ag.height() - self.height() - 4
+                top = bottom - 16   # 允许走路起伏不超过 16px
+            else:
+                left, right, top, bottom = ax - 500, ax + 500, ay - 10, ay + 10
+            return left, right, top, bottom
         if self._mode == "dock":
             dl, dr, dt, db = self.DOCK_RANGE
         else:
             dl, dr, dt, db = self.FREE_RANGE
         left, right = ax - dl, ax + dr
         top, bottom = ay - dt, ay + db
-        scr = self._screen()
         if scr is not None:
             ag = scr.availableGeometry()
             left = max(left, ag.x())
@@ -446,26 +570,32 @@ class DesktopPet(QWidget):
         self.update()
 
     def _advance_walk(self) -> None:
-        """走路帧循环：按 4 拍切换迈步帧；离开走路状态则停止"""
+        """走路帧循环
+
+        - dock/free 模式：正面 6 拍（左迈 → 承重 → 站姿 → 右迈 → 承重 → 站姿）
+        - patrol 模式：侧身 2 拍（stand → walk 交替），根据朝向选左/右侧身
+        """
         if self._state != "walk":
             self._walk_timer.stop()
             return
-        self._walk_idx = (self._walk_idx + 1) % len(self.WALK_CYCLE)
-        frame = self._walk_pixmaps[
-            self.WALK_CYCLE[self._walk_idx] % len(self._walk_pixmaps)
-        ]
-        if frame is not self._pixmap:
-            # 不同迈步姿态帧底形不同，重建掩码避免被剪辑
-            self._pixmap = frame
-            self._build_mask()
-            self.update()
+        if self._mode == "patrol":
+            self._walk_idx = (self._walk_idx + 1) % 2
+            frame = "walk" if self._walk_idx == 1 else "stand"
+            self._pixmap = self._side_frames[frame]
+        else:
+            self._walk_idx = (self._walk_idx + 1) % len(self.WALK_ORDER)
+            self._pixmap = self._walk_frames[self.WALK_ORDER[self._walk_idx]]
+        self._frame_elapsed = 0.0
+        self.update()
 
     def _reset_to_base_frame(self) -> None:
-        """离开走路状态时切回睁眼基准帧（同时恢复掩码）"""
-        if (self._pixmap is not self._open_pixmap
-                and self._pixmap is not self._blink_pixmap):
-            self._pixmap = self._open_pixmap
-            self._build_mask()
+        """离开走路状态时切回基准帧（patrol 模式用侧身站姿）"""
+        if self._mode == "patrol":
+            target = self._side_frames["stand"]
+        else:
+            target = self._open_pixmap
+        if self._pixmap is not target:
+            self._pixmap = target
             self.update()
 
     def _start_stretch(self) -> None:
@@ -473,6 +603,21 @@ class DesktopPet(QWidget):
         if self.isVisible() and self._state == "idle":
             self._stretch = 0.05
         self._stretch_timer.start(random.randint(9000, 15000))
+
+    def _maybe_switch_pose(self) -> None:
+        """待机时随机摆一个小 pose（挥手/叉腰/捧脸/闭眼），几秒后回站姿"""
+        if self.isVisible() and self._state == "idle" and self._idle_pixmaps and self._mode != "patrol":
+            self._pixmap = random.choice(self._idle_pixmaps)
+            self.update()
+            # 4-6 秒后自动回到默认站姿（由 singleShot 触发）
+            QTimer.singleShot(random.randint(4000, 6000), self._reset_idle_pose)
+        self._pose_timer.start(random.randint(14000, 24000))
+
+    def _reset_idle_pose(self) -> None:
+        """从随机 pose 回到默认站姿（仅当仍处于 idle 时）"""
+        if self._state == "idle":
+            self._pixmap = self._open_pixmap
+            self.update()
 
     def _start_jump(self) -> None:
         """点击触发跳跃"""
@@ -500,6 +645,10 @@ class DesktopPet(QWidget):
             if self._stretch < 0:
                 self._stretch = 0
 
+        # 当前拍内进度（驱动上下起伏与重心摆动）
+        if self._state == "walk":
+            self._frame_elapsed += self.TICK_MS
+
         # 跳跃进度
         if self._state == "jump":
             self._jump_phase += 1.0 / self.JUMP_TICKS
@@ -515,7 +664,25 @@ class DesktopPet(QWidget):
                 self._land_squash = 0
 
         # 游走（跳跃时保持水平位移，不更新状态）
-        if self._state != "jump":
+        if self._mode == "patrol" and self._state != "jump":
+            # 巡逻模式：持续水平移动，到屏幕边缘转向并短暂停顿
+            self._wander += self.PATROL_SPEED * self._patrol_dir
+            left, right, _, _ = self._allowed_region()
+            ax = self._base_pos[0]
+            if self._wander <= left - ax:
+                self._wander = float(left - ax)
+                self._patrol_dir = 1
+                self._face = 1
+                self._state = "idle"
+            elif self._wander >= right - ax:
+                self._wander = float(right - ax)
+                self._patrol_dir = -1
+                self._face = -1
+                self._state = "idle"
+            else:
+                self._state = "walk"
+                self._face = self._patrol_dir
+        elif self._state != "jump":
             dx = self._wander
             if abs(self._target_dx - dx) <= self.WANDER_STEP:
                 self._wander = float(self._target_dx)
@@ -529,13 +696,16 @@ class DesktopPet(QWidget):
         # 走路帧管理：走路时启动迈步循环，否则恢复睁眼帧
         if self._state == "walk":
             if not self._walk_timer.isActive():
+                interval = self.PATROL_FRAME_MS if self._mode == "patrol" else self.WALK_FRAME_MS
+                self._walk_timer.setInterval(interval)
                 self._walk_timer.start()
-                # 进入走路立即切到第一帧迈步（不等定时器首次触发，反应更快）
+                # 进入走路立即切到迈步帧（不等定时器首次触发，反应更快）
                 self._walk_idx = 0
-                self._pixmap = self._walk_pixmaps[
-                    self.WALK_CYCLE[0] % len(self._walk_pixmaps)
-                ]
-                self._build_mask()
+                self._frame_elapsed = 0.0
+                if self._mode == "patrol":
+                    self._pixmap = self._side_frames["stand"]
+                else:
+                    self._pixmap = self._walk_frames[self.WALK_ORDER[0]]
                 self.update()
         else:
             if self._walk_timer.isActive():
@@ -555,8 +725,10 @@ class DesktopPet(QWidget):
                 math.sin(math.pi * self._jump_phase) * self.JUMP_H
             ))
         elif self._state == "walk":
+            # 每拍独立起伏：脚步落地时最低、抬腿到中段最高，与换帧严格同步
+            p = min(1.0, self._frame_elapsed / float(self.WALK_FRAME_MS))
             y = self._base_pos[1] + int(round(
-                math.sin(self._t * self.WALK_BOB_SPEED) * self.WALK_BOB_AMP
+                -abs(math.sin(math.pi * p)) * self.WALK_BOB_AMP
             ))
         else:
             y = self._base_pos[1] + int(round(
@@ -587,8 +759,32 @@ class DesktopPet(QWidget):
             self._shadow.set_state(1.0, 150)
         self._shadow.show()
 
+    def _silhouette(self, pm: QPixmap) -> QPixmap:
+        """生成角色剪影（保留原 alpha、填充深色），用于角色自阴影
+
+        结果按 pixmap 缓存，避免每帧重复计算。
+        """
+        key = (pm.cacheKey(), pm.width(), pm.height())
+        hit = self._sil_cache.get(key)
+        if hit is not None:
+            return hit
+        img = QImage(pm.size(), QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.drawPixmap(0, 0, pm)
+        # SourceIn：把不透明像素整体染成深色，保留原轮廓与抗锯齿边
+        p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+        p.fillRect(img.rect(), QColor(46, 26, 40))
+        p.end()
+        sil = QPixmap.fromImage(img)
+        self._sil_cache[key] = sil
+        return sil
+
     def paintEvent(self, event) -> None:
-        """绘制当前帧：朝向翻转 + 挤压拉伸 + 反应性视线（无旋转）"""
+        """绘制角色：自阴影 → 交叉淡化 → 左上环境光
+
+        三层叠加代替原来的"单张贴图硬画"，让平涂 Q 版角色有体积感。
+        """
         if self._pixmap.isNull():
             return
         painter = QPainter(self)
@@ -598,8 +794,7 @@ class DesktopPet(QWidget):
         # 反应性视线：光标靠近时微微侧身（水平平移，不出掩码范围）
         gaze = 0.0
         cur = QCursor.pos()
-        center_x = self.x() + w / 2.0
-        rel = cur.x() - center_x
+        rel = cur.x() - (self.x() + w / 2.0)
         if abs(rel) < self.GAZE_RADIUS:
             gaze = (rel / self.GAZE_RADIUS) * self.GAZE_AMP
 
@@ -626,12 +821,53 @@ class DesktopPet(QWidget):
             sy = 1.0 + self._breath + self._stretch
             sx = 1.0 - self._breath * 0.5 - self._stretch * 0.6
 
-        painter.translate(w / 2.0, h)
-        painter.scale(sx, sy)
-        if self._face < 0:
-            painter.scale(-1.0, 1.0)   # 朝左：水平翻转
-        painter.translate(-w / 2.0 + gaze * self._face, -h)
-        painter.drawPixmap(0, 0, w, h, self._pixmap)
+        # 行走：每拍落地压缩（承重下沉）+ 重心左右摆动
+        lean = 0.0
+        if self._state == "walk":
+            p = min(1.0, self._frame_elapsed / float(self.WALK_FRAME_MS))
+            step = self.WALK_ORDER[self._walk_idx]
+            direction = -1.0 if step == 1 else (1.0 if step == 2 else 0.0)
+            lean = math.sin(math.pi * p) * self.WALK_LEAN_AMP * direction
+            # 承重拍把身体轻轻下压、横向略展（脚底固定），做出踩地的重量
+            squash = self.WALK_SQUASH[self._walk_idx]
+            if squash:
+                sy *= 1.0 - squash
+                sx *= 1.0 + squash * 1.4
+
+        def draw_one(pm, opacity: float, shadow: bool = False) -> None:
+            """按当前变换绘制一帧（shadow=True 用剪影）"""
+            if pm is None or pm.isNull() or opacity <= 0.01:
+                return
+            target = self._silhouette(pm) if shadow else pm
+            painter.save()
+            painter.setOpacity(opacity)
+            painter.translate(w / 2.0, h)
+            painter.scale(sx, sy)
+            if self._face < 0:
+                painter.scale(-1.0, 1.0)   # 朝左：水平翻转
+            painter.translate(-w / 2.0 + (gaze + lean) * self._face, -h)
+            painter.drawPixmap(0, 0, w, h, target)
+            painter.restore()
+
+        # 1) 角色自阴影：向右下偏移的深色剪影，给平涂边缘压出厚度
+        painter.save()
+        painter.translate(self.SHADOW_DX, self.SHADOW_DY)
+        draw_one(self._pixmap, self.SHADOW_ALPHA, True)
+        painter.restore()
+
+        # 2) 角色本体：直接画当前帧（不做半透明叠加，避免双腿重影）
+        draw_one(self._pixmap, 1.0)
+
+        # 3) 环境光：左上高光、右下暗部，只在角色像素内部生效（SourceAtop）
+        painter.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+        grad = QLinearGradient(0, h * 0.05, w, h)
+        grad.setColorAt(0.0, QColor(255, 255, 255, 26))
+        grad.setColorAt(0.42, QColor(255, 255, 255, 0))
+        grad.setColorAt(1.0, QColor(110, 70, 90, 30))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(grad)
+        painter.drawRect(0, 0, w, h)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.end()
 
     # ------------------------------------------------------------------ #
@@ -724,10 +960,13 @@ class DesktopPet(QWidget):
             "QMenu::item { padding: 6px 22px; color: #333333; }"
             "QMenu::item:selected { background: #EAF3FC; color: #4A90E2; }"
         )
+        act_patrol = menu.addAction("沿屏幕底部走动")
         act_back = menu.addAction("回到面板内")
         act_hide = menu.addAction("隐藏小宠")
         chosen = menu.exec(event.globalPos())
-        if chosen == act_back:
+        if chosen == act_patrol:
+            self.start_patrol()
+        elif chosen == act_back:
             self.dock_to_panel()
         elif chosen == act_hide:
             self.hide()
