@@ -281,9 +281,12 @@ class DesktopPet(QWidget):
     WALK_ORDER = (1, 0, 2, 0)
     # 每拍的额外纵向压缩：触地拍承重下沉，经过拍回弹
     WALK_SQUASH = (0.018, 0.0, 0.018, 0.0)
-    FRAME_STEP_PX = 8.0      # 一拍对应的地面位移，用于把换帧节奏和移动速度锁死（防滑步）
-    WALK_BOB_AMP = 3         # 每拍起伏幅度（像素）
+    # 一拍的位移。原为 8px，换算下来每秒要换 6~7 次步，
+    # 起伏频率高得像原地抽搐；拉长到 16px，步频回到每秒 3 步左右
+    FRAME_STEP_PX = 16.0
+    WALK_BOB_AMP = 2         # 每拍起伏幅度（像素），步频降下来后 2px 已够
     WALK_LEAN_AMP = 2.5      # 重心左右摆动幅度（像素）
+    BOB_EASE = 0.28          # 纵向起伏缓动：状态切换时不"跳一下"（防抖）
     SWAY_MAX = 5.0           # 头发/裙摆的滞后摆动最大偏移（像素）
     MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
     MASK_VPAD = 10           # 掩码纵向膨胀：氛围光晕在头顶/脚下发光，不膨胀会被硬裁掉
@@ -294,7 +297,7 @@ class DesktopPet(QWidget):
     WANDER_STEP = 0.85       # 像素/tick（约 53 px/s）
     # 巡逻模式：沿屏幕底部自己来回走，用侧身帧
     PATROL_SPEED = 1.0       # 像素/tick（约 63 px/s）
-    PATROL_FRAME_STEP_PX = 9.0   # 侧身一拍的位移，同样用于锁节奏
+    PATROL_FRAME_STEP_PX = 18.0  # 侧身一拍的位移，同样用于锁节奏
     # 跳跃：抛物线 + 挤压/拉伸
     JUMP_H = 72
     JUMP_TICKS = 44          # 44 tick × 16ms ≈ 0.7s
@@ -384,6 +387,7 @@ class DesktopPet(QWidget):
         self._breath = 0.0
         self._gaze = 0.0             # 视线偏移（缓动后）
         self._pose_pop = 0.0         # 换姿势/停步时的弹性挤压（0..1）
+        self._bob_y = 0.0            # 当前纵向起伏偏移（像素，已缓动）
         self._turn = 0.0             # 转身挤压（0..1）：横向压扁再回弹，模拟绕竖轴转身
         self._last_face = 1
         self._sway = 0.0             # 头发/裙摆滞后偏移（2.5D 形变用）
@@ -745,6 +749,15 @@ class DesktopPet(QWidget):
         if self._state == "walk":
             self._frame_elapsed += self.TICK_MS
 
+        # 纵向起伏：走路跟拍、待机跟呼吸，统一走一遍缓动。
+        # 直接按状态公式取整会产生"切状态跳一下"的位移突变，缓动后看不出来。
+        if self._state == "walk":
+            p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
+            bob_target = -abs(math.sin(math.pi * p)) * self.WALK_BOB_AMP
+        else:
+            bob_target = math.sin(self._t * self.BOB_SPEED) * self.BOB_AMP
+        self._bob_y += (bob_target - self._bob_y) * self.BOB_EASE
+
         # 跳跃进度
         if self._state == "jump":
             self._jump_phase += 1.0 / self.JUMP_TICKS
@@ -828,14 +841,9 @@ class DesktopPet(QWidget):
                 math.sin(math.pi * self._jump_phase) * self.JUMP_H
             ))
         elif self._state == "walk":
-            # 每拍独立起伏：脚步落地时最低、抬腿到中段最高，与换帧严格同步
-            p = min(1.0, self._frame_elapsed / max(1.0, self._walk_interval))
-            amp = self.WALK_BOB_AMP
-            y = self._base_pos[1] + int(round(-abs(math.sin(math.pi * p)) * amp))
+            y = self._base_pos[1] + int(round(self._bob_y))
         else:
-            y = self._base_pos[1] + int(round(
-                math.sin(self._t * self.BOB_SPEED) * self.BOB_AMP
-            ))
+            y = self._base_pos[1] + int(round(self._bob_y))
         left, right, top, bottom = self._allowed_region()
         x = max(left, min(right, x))
         if self._state == "jump":
