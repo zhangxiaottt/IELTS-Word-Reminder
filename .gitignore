@@ -37,3 +37,11 @@ tests/frames/
 
 # ---- Java 服务层编译产物（可 build.bat 重建） ----
 java-server/out/
+java-server/target/
+
+# ---- Gradle / Android 构建产物 ----
+android-app/.gradle/
+android-app/.kotlin/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
