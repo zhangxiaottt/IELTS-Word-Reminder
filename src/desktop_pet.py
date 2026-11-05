@@ -284,11 +284,9 @@ class DesktopPet(QWidget):
     FRAME_STEP_PX = 8.0      # 一拍对应的地面位移，用于把换帧节奏和移动速度锁死（防滑步）
     WALK_BOB_AMP = 3         # 每拍起伏幅度（像素）
     WALK_LEAN_AMP = 2.5      # 重心左右摆动幅度（像素）
-    WARP_STRIPS = 12         # 2.5D 视差形变的分条数（横向条带逐条偏移，头摆脚不动）
     SWAY_MAX = 5.0           # 头发/裙摆的滞后摆动最大偏移（像素）
     MASK_PAD = 10            # 窗口掩码向外膨胀（像素），避免重心偏差/阴影被裁切
     MASK_VPAD = 10           # 掩码纵向膨胀：氛围光晕在头顶/脚下发光，不膨胀会被硬裁掉
-    BREATH_WARP = 1.4        # 呼吸时上半身纵向扩张倍数（脚底固定，胸腔起伏有体积感）
     SPRITE_FIT = 0.95        # 角色在窗口内缩到 95%：给跳跃/伸懒腰留出头顶余量，避免被窗口上边裁切
     SHADOW_DX = 2            # 角色自阴影右下偏移
     SHADOW_DY = 3
@@ -891,42 +889,22 @@ class DesktopPet(QWidget):
         self._scale_cache[key] = sp
         return sp
 
-    def _draw_warped(self, painter, pm: QPixmap, w: float, h: float,
-                     breath: float = 0.0) -> None:
-        """2.5D 分层形变：横向剪切 + 纵向呼吸扩张
+    def _draw_warped(self, painter, pm: QPixmap, w: float, h: float) -> None:
+        """2.5D 形变：以脚底为锚点的整体横向剪切
 
-        把贴图切成横向条带逐条错位：顶部随摆动偏移、脚底固定，
-        平涂立绘就不会像"整块纸片平移"，而像有体积的身体在扭动。
-
-        纵向再按"顶重脚轻"的权重拉伸，呼吸时胸腔/头部起伏而双腿不动，
-        避免整张图等比缩放那种"橡皮人"式的拉伸感。
+        这里用仿射剪切（shear）替代"切条逐条错位"：数学效果等价 ——
+        越靠上横向偏移越大、脚底固定不动，但整张图只画一次，
+        不会在条带边界因为取整/高 DPI 抗锯齿漏出横向缝隙（那条缝
+        叠在透明窗口上就是一条条小黑线）。
         """
         sway = self._sway
-        if abs(sway) < 0.35 and abs(breath) < 0.004:
+        if abs(sway) < 0.35:
             painter.drawPixmap(0, 0, pm)
             return
-        strips = self.WARP_STRIPS
-        sw, sh = pm.width(), pm.height()
-        # 纵向权重：f=1 头顶 / f=0 脚底，呼吸扩张全部集中在上半身
-        weights = []
-        total = 0.0
-        for i in range(strips):
-            f = 1.0 - i / float(strips - 1)
-            wt = 1.0 + breath * f
-            weights.append(wt)
-            total += wt
-        scale_h = h / total
-        y = 0.0
-        for i in range(strips):
-            f = 1.0 - i / float(strips - 1)   # 0=头顶，1=脚底
-            dx = -sway * (1.0 - f)            # 越靠上偏移越大，脚底为 0
-            band = weights[i] * scale_h
-            sy0 = sh * i / float(strips)
-            sy1 = sh * (i + 1) / float(strips)
-            painter.drawPixmap(
-                QRectF(dx, y, w, band), pm,
-                QRectF(0, sy0, sw, sy1 - sy0))
-            y += band
+        # x' = x + (sway/h)*y - sway：y=0（头顶）偏移 -sway，y=h（脚底）偏移 0
+        painter.translate(-sway, 0)
+        painter.shear(sway / float(h), 0)
+        painter.drawPixmap(0, 0, pm)
 
     def _silhouette(self, pm: QPixmap) -> QPixmap:
         """生成角色剪影（保留原 alpha、填充深色），用于角色自阴影
@@ -1000,8 +978,8 @@ class DesktopPet(QWidget):
             sy = 1.0 - self.LAND_SQUASH * self._land_squash
             sx = 1.0 + self.LAND_SQUASH * 1.3 * self._land_squash
         else:                 # 呼吸 + 伸懒腰
-            # 呼吸的纵向变化主要交给 _draw_warped 的"上半身扩张"，
-            # 这里只保留很轻的整体缩放，避免双腿被一起拉长
+            # 呼吸只保留很轻的整体纵向缩放：幅度大了会变成"橡皮人"，
+            # 立绘没有骨骼，靠光影和剪切来体现体积更稳
             sy = 1.0 + self._breath * 0.45 + self._stretch
             sx = 1.0 - self._breath * 0.3 - self._stretch * 0.6
 
@@ -1030,9 +1008,6 @@ class DesktopPet(QWidget):
             if self._mode == "patrol":
                 lean = 2.0      # 侧身走持续前压
 
-        # 呼吸/伸懒腰的纵向体感：上半身随胸腔扩张上浮，脚底钉住不动
-        breath_warp = self._breath * self.BREATH_WARP + self._stretch * 1.1
-
         def draw_one(target, opacity: float, dx: float = 0.0, dy: float = 0.0) -> None:
             """按当前变换绘制一帧（target 为已预缩放的贴图或剪影）"""
             if target is None or target.isNull() or opacity <= 0.01:
@@ -1046,7 +1021,7 @@ class DesktopPet(QWidget):
             if self._face < 0:
                 painter.scale(-1.0, 1.0)   # 朝左：水平翻转
             painter.translate(-w / 2.0 + (self._gaze + lean) * self._face, -h)
-            self._draw_warped(painter, target, w, h, breath_warp)
+            self._draw_warped(painter, target, w, h)
             painter.restore()
 
         # 0) 背光氛围：角色后方一层暖色柔光，把它从桌面背景里"托"起来
