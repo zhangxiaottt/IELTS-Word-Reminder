@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """复习悬浮面板模块 - FloatPanel
-
 参考 QQ音乐电脑版桌面歌词面板的悬浮样式：
 - 无边框、始终置顶、无任务栏图标（Qt.Tool）
 - 支持鼠标拖拽移动（拖拽时鼠标变为移动光标）
@@ -13,9 +12,12 @@
     单词行（加粗、主色调）→ 音标行（灰色小字）→ 释义行 → 例句行（超长截断+悬停提示）
     → 底部按钮行：「认识」「不认识」+ 右侧「暂停/继续」「下一个」
 """
+import math
+
 from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QPointF
 from PySide6.QtGui import (
     QColor, QPainter, QPen, QPixmap, QPainterPath, QLinearGradient,
+    QRadialGradient, QPolygonF,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -134,17 +136,24 @@ class BackgroundCard(QWidget):
     OVERLAY_ALPHA = 150    # 背景图上白色遮罩透明度（0~255）
 
     # ---- 房子样式参数（随面板尺寸自适应）----
-    ROOF_RATIO = 0.20      # 屋顶高度占面板高度的比例
-    ROOF_MIN = 24          # 屋顶最小高度（像素）
-    ROOF_MAX = 46          # 屋顶最大高度（像素）
+    ROOF_RATIO = 0.32      # 屋顶高度占面板高度的比例（尖屋顶需要更多高度）
+    ROOF_MIN = 40          # 屋顶最小高度（像素）
+    ROOF_MAX = 96          # 屋顶最大高度（像素）
+    ROOF_RIDGE = 0.20      # 屋脊在屋顶区内的高度比例（留出冒烟空间）
     WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
     BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
+    SMOKE_PUFFS = 6        # 烟囱烟雾的团数
+    SMOKE_PERIOD = 2.6     # 每团烟雾从烟囱口飘散的周期（秒）
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
         self._bg_pixmap = None   # 原始背景图
         self._bg_scaled = None   # 按当前尺寸缩放后的缓存
         self._house_mode = True  # 是否绘制「房子样式」（默认开启）
+        self._smoke_t = 0.0      # 烟雾动画相位（秒）
+        self._smoke_timer = QTimer(self)
+        self._smoke_timer.setInterval(45)   # 约 22fps，只重绘烟囱口小区域
+        self._smoke_timer.timeout.connect(self._smoke_tick)
         self.setMouseTracking(True)
 
     # ------------------------------------------------------------------ #
@@ -153,6 +162,7 @@ class BackgroundCard(QWidget):
     def set_house_mode(self, enabled: bool) -> None:
         """切换房子样式；关闭后回到普通白底/背景图样式"""
         self._house_mode = bool(enabled)
+        self._sync_smoke_timer()
         self.update()
 
     def house_enabled(self) -> bool:
@@ -162,6 +172,49 @@ class BackgroundCard(QWidget):
     def roof_height(self) -> int:
         """按当前高度计算屋顶高度（像素）"""
         return max(self.ROOF_MIN, min(self.ROOF_MAX, int(self.height() * self.ROOF_RATIO)))
+
+    def _sync_smoke_timer(self) -> None:
+        """只在房子样式且可见时跑烟雾动画，避免后台空转"""
+        if self._house_mode and self.isVisible():
+            if not self._smoke_timer.isActive():
+                self._smoke_timer.start()
+        else:
+            self._smoke_timer.stop()
+
+    def _smoke_tick(self) -> None:
+        """推进烟雾相位，只重绘烟囱周边小区域"""
+        self._smoke_t += self._smoke_timer.interval() / 1000.0
+        if self._smoke_t >= 1e6:
+            self._smoke_t -= 1e6
+        ch = self._chimney_rect()
+        self.update(
+            QRectF(ch.x() - 12, 0, ch.width() + 90, ch.top() + 24).toAlignedRect()
+        )
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_smoke_timer()
+
+    def hideEvent(self, event) -> None:
+        self._smoke_timer.stop()
+        super().hideEvent(event)
+
+    def _roof_ridge_y(self, roof_h: float) -> float:
+        """屋脊高度：留出顶部空间给烟囱冒烟"""
+        return roof_h * self.ROOF_RIDGE
+
+    def _chimney_rect(self) -> QRectF:
+        """大烟囱的几何：立在屋顶右坡、靠右上角，并向上留出冒烟空间"""
+        W = float(self.width())
+        roof_h = float(self.roof_height())
+        cw = max(26.0, min(52.0, W * 0.13))
+        cx = W * 0.82
+        ridge_y = self._roof_ridge_y(roof_h)
+        t = (cx - W / 2.0) / max(1.0, W - 2.0 - W / 2.0)
+        slope_y = ridge_y + t * (roof_h - ridge_y)
+        bottom = slope_y + roof_h * 0.16      # 底部埋进屋顶，看着是"插"在坡上
+        top = max(2.0, bottom - max(34.0, roof_h * 0.70))   # 顶部高出屋脊
+        return QRectF(cx - cw / 2.0, top, cw, bottom - top)
 
     def set_background(self, path: str) -> None:
         """设置背景图；path 为空或加载失败则清除背景，恢复白色底"""
@@ -227,10 +280,11 @@ class BackgroundCard(QWidget):
             painter.fillRect(rect, QColor("#FFFFFF"))
 
         painter.setClipping(False)
-        # 边框
-        painter.setPen(QPen(QColor("#E0E0E0"), 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(path)
+        if not self._house_mode:
+            # 普通样式才画外框；房子样式靠尖顶轮廓自成形状，画方框会显得"被关在盒子里"
+            painter.setPen(QPen(QColor("#E0E0E0"), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(path)
         painter.end()
         super().paintEvent(event)
 
@@ -249,15 +303,17 @@ class BackgroundCard(QWidget):
         # ---- 墙体（奶油色）----
         painter.fillRect(QRectF(0, roof_h, W, H - roof_h), QColor("#FFF6F0"))
 
-        # ---- 屋顶：粉色梯形 + 花边底沿（像小木屋的瓦檐）----
-        inset = max(8, min(22, int(W * 0.05)))
+        # ---- 屋顶：粉色山墙尖顶 + 花边底沿（像小木屋的瓦檐）----
+        # 两侧斜坡外的区域不绘制 -> 面板本身是透明窗口，会自然变成"屋子的两肩"
+        ridge_y = self._roof_ridge_y(roof_h)
+        inset = max(2.0, min(6.0, W * 0.015))        # 屋顶外沿比墙略内收一点
+        sc = max(4, min(8, int(roof_h * 0.16)))      # 花边下凸深度
         roof_path = QPainterPath()
-        roof_path.moveTo(0, 0)
-        roof_path.lineTo(W, 0)
-        roof_path.lineTo(W - inset, roof_h)
-        n = max(4, int((W - 2 * inset) // 26))       # 花边个数
+        roof_path.moveTo(inset, roof_h)
+        roof_path.lineTo(W / 2.0, ridge_y)           # 左坡
+        roof_path.lineTo(W - inset, roof_h)          # 右坡
+        n = max(4, int((W - 2 * inset) // 26))       # 檐口花边个数
         spacing = (W - 2 * inset) / n
-        sc = max(4, min(8, int(roof_h * 0.28)))      # 花边下凸深度
         for i in range(n - 1, -1, -1):
             cx = inset + spacing * (i + 0.5)
             xr = cx + spacing / 2.0
@@ -266,34 +322,72 @@ class BackgroundCard(QWidget):
                 xr = W - inset
             roof_path.lineTo(xr, roof_h)
             roof_path.quadTo(cx, roof_h + sc, xl, roof_h)
-        roof_path.lineTo(inset, roof_h)
         roof_path.closeSubpath()
-        grad = QLinearGradient(0, 0, 0, roof_h + sc)
-        grad.setColorAt(0.0, QColor("#FFC2CF"))
+        grad = QLinearGradient(0, ridge_y, 0, roof_h + sc)
+        grad.setColorAt(0.0, QColor("#FFCBD6"))
         grad.setColorAt(1.0, QColor("#FF9FB4"))
         painter.setPen(QPen(QColor("#F48BA6"), 1.2))
         painter.setBrush(grad)
         painter.drawPath(roof_path)
 
-        # 屋顶瓦片纹（几条浅色横线，柔和）
-        painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
-        for frac in (0.35, 0.62, 0.88):
-            yy = int(roof_h * frac)
-            painter.drawLine(QPointF(4, yy), QPointF(W - 4, yy))
+        # 左坡受光、右坡背光：用两块三角叠色做出立体斜面
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 26))
+        painter.drawPolygon(QPolygonF([
+            QPointF(inset, roof_h), QPointF(W / 2.0, ridge_y),
+            QPointF(W / 2.0, roof_h),
+        ]))
+        painter.setBrush(QColor(214, 110, 140, 46))
+        painter.drawPolygon(QPolygonF([
+            QPointF(W / 2.0, ridge_y), QPointF(W - inset, roof_h),
+            QPointF(W / 2.0, roof_h),
+        ]))
 
-        # 屋顶中心小爱心徽标
-        self._draw_heart(painter, W / 2.0, roof_h * 0.42, 5.0, QColor("#FF6F91"))
-        # 右侧烟囱 + 爱心小烟
-        ch_x = W - inset - 28
-        chimney = QRectF(ch_x, 4, 16, max(10, roof_h - 16))
-        painter.setPen(QPen(QColor("#E87A95"), 1))
-        painter.setBrush(QColor("#F79BB1"))
-        painter.drawRoundedRect(chimney, 4, 4)
-        self._draw_heart(painter, ch_x + 8, roof_h - 6, 3.2, QColor("#FF9FB4"))
-        self._draw_heart(painter, ch_x + 22, roof_h - 4, 2.6, QColor("#FFC0CB"))
+        # 瓦片横纹（按三角宽度逐行收窄，不会画出屋顶）
+        painter.setPen(QPen(QColor(255, 255, 255, 62), 1))
+        span = max(1.0, roof_h - ridge_y)
+        for frac in (0.30, 0.50, 0.70, 0.88):
+            yy = ridge_y + span * frac
+            half = (W / 2.0 - inset) * frac
+            painter.drawLine(QPointF(W / 2.0 - half + 1, yy),
+                            QPointF(W / 2.0 + half - 1, yy))
+
+        # 屋脊 + 中心小爱心徽标
+        painter.setPen(QPen(QColor("#F48BA6"), 1))
+        painter.drawLine(QPointF(W / 2.0, ridge_y),
+                         QPointF(W / 2.0, ridge_y + 3))
+        self._draw_heart(painter, W / 2.0, ridge_y + span * 0.62,
+                         max(3.5, min(5.5, roof_h * 0.07)), QColor("#FF6F91"))
+
+        # 檐口下的一道柔和投影，让屋顶"压"在墙上
+        painter.setPen(QPen(QColor(176, 92, 112, 55), 2))
+        painter.drawLine(QPointF(inset + 2, roof_h + sc + 0.5),
+                         QPointF(W - inset - 2, roof_h + sc + 0.5))
+
+        # ---- 大烟囱（右上方，底部插进右坡）----
+        ch = self._chimney_rect()
+        painter.setPen(QPen(QColor("#E0718C"), 1.2))
+        painter.setBrush(QColor("#F58CA6"))
+        painter.drawRoundedRect(ch.adjusted(0, 6, 0, 0), 4, 4)
+        cap = QRectF(ch.x() - 3, ch.y(), ch.width() + 6, 7)
+        painter.setBrush(QColor("#E8708C"))
+        painter.drawRoundedRect(cap, 3, 3)
+        # 砖纹
+        painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        inner_h = max(1.0, ch.height() - 6)
+        for i in (1, 2, 3):
+            yy = ch.y() + 6 + inner_h * i / 4.0
+            painter.drawLine(QPointF(ch.x() + 3, yy), QPointF(ch.right() - 3, yy))
+        # 烟囱口
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#8C3F55"))
+        painter.drawEllipse(QRectF(ch.x() + 7, ch.y() + 2.5,
+                                   ch.width() - 14, 3.5))
+        # 飘出来的烟
+        self._draw_smoke(painter, ch)
 
         # ---- 大窗户（文字区）：浅蓝玻璃 + 粉色窗框 + 窗台 ----
-        wy = roof_h - 2
+        wy = roof_h + 2
         ww = W - 22
         wh = max(self.WINDOW_MIN_H, H - wy - self.BOTTOM_BAND)
         if wh > H - wy - 8:
@@ -322,6 +416,32 @@ class BackgroundCard(QWidget):
         painter.drawRect(QRectF(0, H - 12, W, 12))
         for fx in (8, 18, 28, W - 28, W - 18, W - 8):
             self._draw_flower(painter, fx, H - 5)
+
+    def _draw_smoke(self, painter: QPainter, ch: QRectF) -> None:
+        """烟囱冒出的烟：多团径向渐变烟团向上飘、向右散，越飘越大越淡
+
+        动画相位由 _smoke_timer 推进；每团烟按固定周期循环，
+        这样只需重绘烟囱附近的小区域，开销很小。
+        """
+        mouth_x = ch.center().x()
+        mouth_y = ch.top() + 2.0
+        rise = max(10.0, min(18.0, ch.top() + 2.0))  # 上升高度（不出窗口顶部）
+        drift = max(22.0, ch.width() * 0.55)         # 向右飘散距离
+        painter.setPen(Qt.NoPen)
+        for i in range(self.SMOKE_PUFFS):
+            ph = (self._smoke_t / self.SMOKE_PERIOD + i / float(self.SMOKE_PUFFS)) % 1.0
+            px = mouth_x + ph * drift + math.sin(ph * 3.2 + i * 0.9) * 3.5
+            py = mouth_y - ph * rise
+            r = 4.0 + ph * max(8.0, ch.width() * 0.26)
+            a = int(190 * (1.0 - ph) ** 0.9)
+            if a <= 3:
+                continue
+            grad = QRadialGradient(QPointF(px, py), r)
+            grad.setColorAt(0.0, QColor(255, 255, 255, a))
+            grad.setColorAt(0.45, QColor(198, 191, 207, int(a * 0.95)))
+            grad.setColorAt(1.0, QColor(190, 183, 200, 0))
+            painter.setBrush(grad)
+            painter.drawEllipse(QPointF(px, py), r, r)
 
     @staticmethod
     def _draw_heart(painter: QPainter, cx: float, cy: float, s: float, color: QColor) -> None:
