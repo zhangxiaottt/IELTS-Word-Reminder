@@ -22,6 +22,8 @@
 import math
 import random
 import datetime
+import queue
+import threading
 
 from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF, QPropertyAnimation
 from PySide6.QtGui import (
@@ -31,6 +33,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QWidget, QMenu
 
 from .utils import get_asset_path
+from .llm_client import LLMClient
 
 # 角色帧路径（透明 PNG）
 SPRITE_OPEN = "pets/pet_1.png"          # 睁眼帧
@@ -95,39 +98,44 @@ def _daily_phrase() -> str:
     return random.choice(REMIND_TEXTS)
 
 
-# 简单句模板：把当前展示的单词嵌进一句浅显易懂的英语
-WORD_SENTENCE_TEMPLATES = (
-    'I learned the word "{w}" today.',
-    'Do you know what "{w}" means?',
-    'Can you make a sentence with "{w}"?',
-    'Let\'s practise "{w}" together!',
-    'Try to remember "{w}" today!',
-    'I saw "{w}" in my reading today.',
-    'Say "{w}" out loud with me!',
-    '"{w}" is on my word list.',
+# 让大模型写一句"自然用到该词"的英语例句（而不是解释这个单词）
+SENTENCE_SYSTEM_PROMPT = (
+    "You write one natural English example sentence for a vocabulary word. "
+    "The sentence must use the word naturally in a real situation. "
+    "Keep it simple (CEFR A2, 6-14 words). Reply with the sentence only, "
+    "no quotes, no translation, no explanation."
 )
 
-_last_sentence = [""]   # 上一句，避免气泡连续说同一句
+
+def _sentence_request(row: dict) -> str:
+    """拼出给大模型的用户提示"""
+    word = row.get("word") or ""
+    meaning = (row.get("meaning") or "").replace("\n", " ")
+    return "Word: {}\nMeaning: {}\nWrite one sentence.".format(word, meaning)
 
 
-def _word_sentence(row: dict) -> str:
-    """把当前单词嵌进一句简单的英语句子
-
-    优先用词库自带的英文例句（本身就含该词，最自然），
-    没有例句或例句不含该词时套用简单模板；不连续重复同一句。
-    """
-    word = ((row or {}).get("word") or "").strip()
-    if not word:
+def _clean_sentence(text: str, word: str) -> str:
+    """规整模型输出：去引号/换行，且必须真的包含目标词"""
+    if not text:
         return ""
-    pool = []
-    example = ((row or {}).get("example") or "").strip()
+    s = " ".join(text.strip().split())
+    s = s.strip("\"'“”‘’「」")
+    if not s or word.lower() not in s.lower():
+        return ""
+    return s
+
+
+def _fallback_sentence(row: dict) -> str:
+    """模型不可用（未配置/网络失败）时的兜底：优先用词库自带例句"""
+    if not row:
+        return ""
+    word = (row.get("word") or "").strip()
+    example = (row.get("example") or "").strip()
     if example and word.lower() in example.lower():
-        pool.append(example)
-    pool.extend(t.format(w=word) for t in WORD_SENTENCE_TEMPLATES)
-    choices = [s for s in pool if s != _last_sentence[0]] or pool
-    sentence = random.choice(choices)
-    _last_sentence[0] = sentence
-    return sentence
+        return example
+    if word:
+        return 'I learned the word "{}" today.'.format(word)
+    return ""
 
 
 class _GroundShadow(QWidget):
@@ -458,6 +466,13 @@ class DesktopPet(QWidget):
         self._look_timer.timeout.connect(self._pick_look)
         self._look_timer.start(random.randint(3500, 6000))
 
+        # 例句生成（大模型异步，绝不阻塞界面）
+        self._llm = LLMClient(config)
+        self._sentence_cache = {}       # word -> 自然例句
+        self._sentence_pending = set()  # 正在后台生成中的词
+        self._sentence_results = queue.Queue()
+        self._prefetch_tick = 0
+
         # 走路帧循环定时器（走路时切换迈步帧）
         self._walk_timer = QTimer(self)
         self._walk_timer.timeout.connect(self._advance_walk)
@@ -741,6 +756,14 @@ class DesktopPet(QWidget):
         self._t += 1
         if not self.isVisible() or not self._panel.isVisible() or self._dragging:
             return
+
+        # 例句生成结果回收 + 提前给当前词备好一句（每秒一次，开销可忽略）
+        self._poll_sentences()
+        self._prefetch_tick += 1
+        if self._prefetch_tick >= 60:
+            self._prefetch_tick = 0
+            if self._panel is not None and self._panel.isVisible():
+                self._request_sentence(self._panel.current_word_row())
 
         # 呼吸 / 伸懒腰衰减（呼吸速度做极慢的微调，避免机械的等周期起伏）
         breath_speed = self.BREATH_SPEED * (
@@ -1176,17 +1199,63 @@ class DesktopPet(QWidget):
         super().mouseReleaseEvent(event)
 
     # ------------------------------------------------------------------ #
-    # 说话（日常话语）
+    # 说话（含当前单词的自然英语例句）
     # ------------------------------------------------------------------ #
+    def _poll_sentences(self) -> None:
+        """主线程轮询：把后台线程生成好的例句收进缓存"""
+        while True:
+            try:
+                word, sentence = self._sentence_results.get_nowait()
+            except queue.Empty:
+                return
+            self._sentence_pending.discard(word)
+            if sentence:
+                self._sentence_cache[word] = sentence
+
+    def _request_sentence(self, row: dict) -> None:
+        """后台线程请大模型写一句自然例句（同一个词不重复请求）"""
+        if not row:
+            return
+        word = (row.get("word") or "").strip()
+        if (not word or word in self._sentence_cache
+                or word in self._sentence_pending or not self._llm.enabled()):
+            return
+        self._sentence_pending.add(word)
+        payload = dict(row)
+
+        def work() -> None:
+            try:
+                text = self._llm.complete(
+                    [{"role": "system", "content": SENTENCE_SYSTEM_PROMPT},
+                     {"role": "user", "content": _sentence_request(payload)}],
+                    temperature=0.9, max_tokens=60,
+                )
+            except Exception:
+                text = None
+            self._sentence_results.put(
+                (word, _clean_sentence(text or "", word)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sentence_for(self, row: dict) -> str:
+        """取当前词的自然例句：有缓存直接用，否则后台生成、先给兜底句"""
+        if not row:
+            return ""
+        word = (row.get("word") or "").strip()
+        if word in self._sentence_cache:
+            return self._sentence_cache[word]
+        self._request_sentence(row)
+        return _fallback_sentence(row)
+
     def show_bubble(self, text: str = None) -> None:
         """在宠物头顶弹出带尾巴的气泡（约 2.6 秒后自动消失）
 
-        默认说一句含「当前展示单词」的简单英语句子；词库为空时才退回
-        按时段的日常话语。
+        默认说一句含「当前展示单词」的英语例句（大模型生成，自然语境）；
+        模型还没返回时先用词库例句兜底，词库为空才退回日常话语。
         """
         if text is None:
             row = self._panel.current_word_row() if self._panel else None
-            text = _word_sentence(row) if row else ""
+            text = self._sentence_for(row) if row else ""
             if not text:
                 text = _daily_phrase()
         scr = self._screen()
