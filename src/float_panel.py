@@ -142,8 +142,8 @@ class BackgroundCard(QWidget):
     ROOF_RIDGE = 0.20      # 屋脊在屋顶区内的高度比例（留出喷星空间）
     WINDOW_MIN_H = 36      # 窗户（文字区）最小高度（像素）
     BOTTOM_BAND = 52       # 底部留给按钮行/草地的区域高度（像素）
-    STAR_COUNT = 9         # 烟囱一次喷出的星星数量
-    STAR_PERIOD = 2.2      # 一颗星星从喷出到消失的周期（秒）
+    STAR_COUNT = 6         # 烟囱一次喷出的星星数量
+    STAR_PERIOD = 3.2      # 一颗星星从喷出到消失的周期（秒）
 
     def __init__(self, parent: QWidget = None):
         super().__init__(parent)
@@ -429,7 +429,7 @@ class BackgroundCard(QWidget):
         return QPolygonF(pts)
 
     def _draw_stars(self, painter: QPainter, ch: QRectF) -> None:
-        """烟囱喷星星：金色小星星从烟囱口弹出，向上偏右飞散、边转边淡出
+        """烟囱柔柔地飘出星星：粒子少、速度慢、光晕大而淡，边转边消散
 
         动画相位由 _fx_timer 推进；每颗星按固定周期循环，
         这样只需重绘烟囱附近的小区域，开销很小。
@@ -437,33 +437,33 @@ class BackgroundCard(QWidget):
         mouth_x = ch.center().x() + ch.width() * 0.05
         mouth_y = ch.top() + 3.0
         rise = max(10.0, min(16.0, ch.top() + 2.0))   # 喷出高度（不冲出窗口顶部）
-        drift = max(28.0, ch.width() * 0.85)          # 向右飞散距离
+        drift = max(24.0, ch.width() * 0.70)          # 向右飘散距离
         colors = (
-            QColor("#FFF3B8"), QColor("#FFD86B"),
-            QColor("#FFB7CE"), QColor("#FFFFFF"),
+            QColor("#FFEFC2"), QColor("#FFD9E2"),
+            QColor("#FFF6E5"), QColor("#FFC9DC"),
         )
         for i in range(self.STAR_COUNT):
             ph = (self._fx_t / self.STAR_PERIOD + i / float(self.STAR_COUNT)) % 1.0
-            ease = 1.0 - (1.0 - ph) ** 1.8            # 刚喷出时快，随后减速
-            px = mouth_x + ease * drift + math.sin(ph * 5.0 + i * 1.3) * 3.0
+            ease = ph * ph * (3.0 - 2.0 * ph)          # 平滑起步与收尾，不是"喷射"
+            px = mouth_x + ease * drift + math.sin(ph * 3.0 + i * 1.1) * 2.0
             py = mouth_y - ease * rise
-            a = int(215 * (1.0 - ph) ** 0.8)
+            a = int(170 * (1.0 - ph) ** 1.2)           # 全程缓慢淡出
             if a <= 3:
                 continue
-            r = 2.2 + 2.6 * math.sin(math.pi * ph)    # 先变大再变小
+            r = 1.8 + 1.8 * math.sin(math.pi * ph)     # 小幅度呼吸，不过分抢眼
             col = colors[i % len(colors)]
-            # 柔光晕：让星星在深色/浅色桌面上都亮得起来
+            # 大而淡的柔光，让星星像雾一样轻轻亮起
             gc = QColor(col)
-            gc.setAlpha(int(a * 0.45))
-            glow = QRadialGradient(QPointF(px, py), r * 2.4)
+            gc.setAlpha(int(a * 0.35))
+            glow = QRadialGradient(QPointF(px, py), r * 3.0)
             glow.setColorAt(0.0, gc)
             glow.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
             painter.setPen(Qt.NoPen)
             painter.setBrush(glow)
-            painter.drawEllipse(QPointF(px, py), r * 2.4, r * 2.4)
-            # 四角星本体
-            star = self._star_polygon(px, py, r * 1.9, r * 0.62,
-                                      math.radians(ph * 160 + i * 40))
+            painter.drawEllipse(QPointF(px, py), r * 3.0, r * 3.0)
+            # 四角星本体：慢慢转，尖角收得更圆润一些
+            star = self._star_polygon(px, py, r * 1.6, r * 0.55,
+                                      math.radians(ph * 60 + i * 30))
             painter.setBrush(col)
             painter.drawPolygon(star)
 
