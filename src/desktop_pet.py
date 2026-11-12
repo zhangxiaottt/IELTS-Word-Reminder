@@ -406,9 +406,6 @@ class DesktopPet(QWidget):
         self._walk_frames = [_wbase, self._walk_pixmaps[0], self._walk_pixmaps[1]]
         self._walk_idx = 0
         self._pixmap = self._open_pixmap
-        # 交叉淡化：换帧时上一张贴图淡出、新图淡入（硬切会像"闪/跳"一下）
-        self._fade_from = None
-        self._fade_t = 1.0
         # 待机基准帧（可能是某个小 pose，眨眼/恢复都回到它）
         self._idle_frame = self._open_pixmap
         # 换帧只替换贴图，不叠加半透明混合（避免双腿重影）
@@ -722,12 +719,13 @@ class DesktopPet(QWidget):
         self._frame_elapsed = 0.0
 
     def _set_frame(self, pm) -> None:
-        """切换贴图：与上一帧做约 200ms 交叉淡化，避免硬切造成的"闪一下\""""
+        """切换贴图（硬切，不做交叉淡化）
+
+        两张贴图半透明叠加时角色内部不透明度凑不满，下面垫的亮边/环境光
+        会透出来，做动作时就是一圈"光影"；走路帧叠加还会出现"四条腿"。
+        """
         if pm is None or pm.isNull() or pm is self._pixmap:
             return
-        if self._pixmap is not None and not self._pixmap.isNull():
-            self._fade_from = self._pixmap
-            self._fade_t = 0.0
         self._pixmap = pm
         self.update()
 
@@ -746,7 +744,10 @@ class DesktopPet(QWidget):
             target = self._side_frames["stand"]
         else:
             target = self._idle_frame
+        prev = self._pixmap
         self._set_frame(target)
+        if self._pixmap is not prev:
+            self._pose_pop = max(self._pose_pop, 0.55)   # 停步时轻微回弹，避免硬切
 
     def _start_stretch(self) -> None:
         """偶尔伸个懒腰（小幅纵向拉长，随即恢复）"""
@@ -759,6 +760,7 @@ class DesktopPet(QWidget):
         if self.isVisible() and self._state == "idle" and self._idle_pixmaps and self._mode != "patrol":
             self._idle_frame = random.choice(self._idle_pixmaps)
             self._set_frame(self._idle_frame)
+            self._pose_pop = 1.0     # 换姿势时轻微挤压，掩盖帧之间的硬切
             # 4-6 秒后自动回到默认站姿（由 singleShot 触发）
             QTimer.singleShot(random.randint(4000, 6000), self._reset_idle_pose)
         self._pose_timer.start(random.randint(14000, 24000))
@@ -768,6 +770,7 @@ class DesktopPet(QWidget):
         if self._state == "idle":
             self._idle_frame = self._open_pixmap
             self._set_frame(self._open_pixmap)
+            self._pose_pop = 0.8
 
     def _start_jump(self) -> None:
         """点击触发跳跃"""
@@ -808,11 +811,6 @@ class DesktopPet(QWidget):
         # 换姿势 / 停步的弹性挤压衰减
         if self._pose_pop > 0:
             self._pose_pop = max(0.0, self._pose_pop - 0.09)
-        # 换帧交叉淡化进度（约 190ms）
-        if self._fade_t < 1.0:
-            self._fade_t = min(1.0, self._fade_t + 0.085)
-            if self._fade_t >= 1.0:
-                self._fade_from = None
         # 转身挤压衰减（约 290ms 内横向压扁再回弹）
         if self._turn > 0:
             self._turn = max(0.0, self._turn - 0.06)
@@ -1160,12 +1158,8 @@ class DesktopPet(QWidget):
         draw_one(sil, 0.07, -2.4 - lx * 3.2, -2.4 - ly * 3.2)
         draw_one(sil, 0.12, -1.0 - lx * 1.6, -1.0 - ly * 1.6)
 
-        # 3) 本体（换帧淡入淡出：旧帧淡出、新帧淡入）
-        if self._fade_from is not None and self._fade_t < 0.999:
-            draw_one(self._scaled(self._fade_from), 1.0 - self._fade_t)
-            draw_one(frame, self._fade_t)
-        else:
-            draw_one(frame, 1.0)
+        # 3) 本体
+        draw_one(frame, 1.0)
 
         # 3.5) 跳跃运动残影：按竖直速度调制（起跳/下落最快、顶点几乎无残影），
         #      避免在最高点拖出一条压到窗口底边的重影
