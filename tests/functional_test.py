@@ -64,13 +64,17 @@ def main():
     # 手动输入自己的释义
     win._meaning_edit.setText("int. 你好，喂")
     QTest.keyClick(win._input, Qt.Key_Return)
-    # 保存后 1 秒自动关闭（用离屏事件循环推进）
-    spin_wait(1200)
+    # 保存后窗口保持打开，短暂提示后清空输入框等下一个
+    spin_wait(900)
     row = wm.get_word_by_word("hello")
     report("录入: 回车保存单词", row is not None)
     report("录入: 手动释义已保存", row is not None and row["meaning"] == "int. 你好，喂",
            "meaning={}".format(row["meaning"] if row else None))
-    report("录入: 保存后自动关闭", not win.isVisible())
+    report("录入: 保存后窗口常驻", win.isVisible())
+    report("录入: 保存后清空待录下一个",
+           win._input.text() == "" and win._meaning_edit.text() == "",
+           "input={!r} meaning={!r}".format(win._input.text(), win._meaning_edit.text()))
+    win.close()
 
     # ---- 2. 已存在单词：确认覆盖路径（替换 QMessageBox 弹窗） ----
     win2 = InputWidget(cfg, wm, None)

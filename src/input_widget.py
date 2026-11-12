@@ -5,8 +5,8 @@
 - 输入单词后自动调用词典 API 实时显示结果（带防抖与后台线程）
 - 「中文释义」输入框始终可见、可编辑：自动查到的释义可直接修改，
   也可以完全手动输入自己的释义（网络异常时同样可以手动填）
-- 回车保存，成功后提示「已保存」，1 秒后自动关闭
-- Esc 直接关闭
+- 回车保存，成功后提示「已保存」，随后清空输入框继续录下一个（窗口常驻）
+- Esc 或 Ctrl+Alt+Q 关闭窗口
 - 单词已存在时提示「该单词已收录，是否更新释义？」，确认则覆盖
 """
 from PySide6.QtCore import Qt, QTimer, Signal, QThread
@@ -174,7 +174,7 @@ class InputWidget(QWidget):
         layout.addWidget(self._example_label)
 
         # 底部提示行
-        hint = QLabel("回车保存 · Esc 关闭")
+        hint = QLabel("回车保存并继续录入 · Esc / Ctrl+Alt+Q 关闭")
         hint.setStyleSheet(
             "font-size: 11px; color: {}; background: transparent;".format(self.COLOR_GRAY)
         )
@@ -304,9 +304,21 @@ class InputWidget(QWidget):
         self.saved.emit({"word": word})
 
     def _show_saved(self) -> None:
-        """显示「已保存」提示，1 秒后自动关闭"""
-        self._status_label.setText("已保存 ✓")
-        QTimer.singleShot(1000, self.close)
+        """显示「已保存」提示，稍后清空界面继续录入下一个（窗口保持打开）"""
+        self._status_label.setText("已保存 ✓ 继续输入下一个单词")
+        QTimer.singleShot(700, self._reset_for_next)
+
+    def _reset_for_next(self) -> None:
+        """清空界面并重新聚焦，准备录下一个单词"""
+        self._query_timer.stop()
+        self._input.clear()
+        self._status_label.setText("")
+        self._meaning_edit.clear()
+        self._meaning_edit.setPlaceholderText("中文释义（可手动修改）")
+        self._example_label.setText("")
+        self._last_query_word = ""
+        self._cached_result = {}
+        self._input.setFocus()
 
     # ------------------------------------------------------------------ #
     # 快捷键 / 焦点

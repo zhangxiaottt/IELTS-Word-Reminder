@@ -29,7 +29,10 @@ class ConfigManager:
             "house": True,
         },
         "review": {"interval": 10, "auto_start": True},
-        "shortcut": {"input": "Ctrl+Alt+W", "toggle": "Ctrl+Alt+S"},
+        "shortcut": {
+            "input": "Ctrl+Alt+W", "toggle": "Ctrl+Alt+S",
+            "close_input": "Ctrl+Alt+Q",
+        },
         "auto_launch": False,
         # 大模型 API（OpenAI 兼容，厂商无关）：未配置或失败时自动回落本地模板
         "llm": {"enabled": False, "base_url": "", "api_key": "", "model": ""},

@@ -258,6 +258,7 @@ class MainApp:
 
         register(self.config.get("shortcut.input", "Ctrl+Alt+W"), "input")
         register(self.config.get("shortcut.toggle", "Ctrl+Alt+S"), "toggle")
+        register(self.config.get("shortcut.close_input", "Ctrl+Alt+Q"), "close_input")
 
     def _on_hotkey(self, name: str) -> None:
         """处理快捷键回调（Qt 主线程）"""
@@ -265,6 +266,13 @@ class MainApp:
             self.open_input_widget()
         elif name == "toggle":
             self.panel.toggle_pause()
+        elif name == "close_input":
+            self.close_input_widget()
+
+    def close_input_widget(self) -> None:
+        """关闭单词录入窗口（录入面板常驻，用快捷键结束时调用）"""
+        if self._input_widget is not None and self._input_widget.isVisible():
+            self._input_widget.close()
 
     # ------------------------------------------------------------------ #
     # 各窗口打开逻辑（懒加载 + 单实例复用）
