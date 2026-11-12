@@ -432,6 +432,7 @@ class DesktopPet(QWidget):
         self._land_squash = 0.0      # 落地挤压衰减（0..1）
         self._stretch = 0.0          # 伸懒腰幅度（0..1）
         self._breath = 0.0
+        self._breath_phase = 0.0     # 呼吸相位（累加，不能用 t*速度 —— 见 _tick 注释）
         self._gaze = 0.0             # 视线偏移（缓动后）
         self._pose_pop = 0.0         # 换姿势/停步时的弹性挤压（0..1）
         self._bob_y = 0.0            # 当前纵向起伏偏移（像素，已缓动）
@@ -800,10 +801,15 @@ class DesktopPet(QWidget):
                 self._request_sentence(self._panel.current_word_row())
 
         # 呼吸 / 伸懒腰衰减（呼吸速度做极慢的微调，避免机械的等周期起伏）
+        # 注意：相位必须逐 tick 累加。旧写法 sin(t * 速度(t)) 把"当前速度"
+        # 直接乘上运行时长，相位导数会多出 t * d(速度)/dt 一项，
+        # 越跑越快：10 分钟时呼吸已变成 3Hz 的抽搐，1 小时超过 10Hz ——
+        # 这就是"刚打开正常、放久了开始上下剧烈抖动"的真正原因
         breath_speed = self.BREATH_SPEED * (
             1.0 + 0.10 * math.sin(self._t * 0.0035)
         )
-        self._breath = math.sin(self._t * breath_speed) * self.BREATH_AMP
+        self._breath_phase += breath_speed
+        self._breath = math.sin(self._breath_phase) * self.BREATH_AMP
         if self._stretch > 0:
             self._stretch -= 0.008
             if self._stretch < 0:
